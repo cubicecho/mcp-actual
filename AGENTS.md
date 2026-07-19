@@ -6,9 +6,17 @@ its data to agents over MCP — streamable HTTP at `/mcp` and stdio for local
 clients (`mcp-actual-stdio`). Configuration is entirely environment-driven;
 `DATA_DIR` holds the only state (the Actual API's cached copy of the budget).
 
-**MVP scope (v0.1.0): one tool, `list_accounts`** — every account with its
-current balance. Keep it that way until the surface is deliberately widened;
-each new tool is a new blast radius over someone's real financial data.
+**Read [`SPECS.md`](SPECS.md) first** — it holds the locked design decisions and
+the itemized work list for the tool surface. Ideas that were considered and
+deliberately *not* built live in [`TODO_IDEAS.md`](TODO_IDEAS.md) ("potential
+future ideas"), each with the reasoning that deferred it. When you decide
+against building something non-obvious, record it there rather than dropping
+it — and when you are about to propose a new tool, check it first, because the
+idea may already have been rejected for a reason that still holds.
+
+v0.1.x shipped exactly one tool, `list_accounts`. The surface widens per
+SPECS.md; every new tool is a new blast radius over someone's real financial
+data, so none of it is speculative — build what is specified.
 
 Single package, no workspaces: everything is under `src/`.
 
@@ -53,6 +61,7 @@ docker compose up        # run the container; ./data mounted at /data
 | **Env-only config** | No config file to keep in sync. `loadConfig()` validates the whole environment up front and reports every problem at once |
 | **Node ≥22.18 type stripping** | Dev runs `.ts` directly (`node --watch`), no build step; `tsc` with `rewriteRelativeImportExtensions` emits `dist/` for prod — so **use `.ts` extensions in all relative imports** |
 | **Single bearer token auth** | `MCP_ACTUAL_TOKEN` guards `/mcp`; `SECURE_LOCAL_NET=true` disables auth entirely (trusted-network escape hatch). `/api/status` is always open — it is a liveness probe and reveals nothing about the budget |
+| **One write gate** | `ACTUAL_ENABLE_WRITES` (default `true`) governs every mutating tool. There is no second destructive tier — deletes are ordinary writes. When off, mutating tools are **not advertised** in `tools/list`; never show an agent a tool it cannot call |
 
 ## Key Conventions
 
@@ -64,7 +73,9 @@ method there, not a second entry point into the library.
 
 **Money is integer cents.** Actual stores and returns amounts in minor units.
 Never do float math on them — sum the integers and convert once for display
-with `api.utils.integerToAmount`.
+with `api.utils.integerToAmount`. Tools *return* a decimal alongside the
+integer for readability, but never *accept* one: float money input is a
+correctness trap.
 
 **Sync before you read.** Other Actual clients write to the same budget; a tool
 that reports stale balances is worse than one that is slightly slower.
