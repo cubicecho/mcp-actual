@@ -1,4 +1,4 @@
-import { ActualClient } from './actual/client.ts';
+import { ActualClient, createRepos } from './actual/index.ts';
 import { buildApp } from './app.ts';
 import { authDisabledByEnv } from './auth.ts';
 import { loadConfig } from './config.ts';
@@ -21,16 +21,27 @@ async function main(): Promise<void> {
     console.warn(`Could not open the budget at startup (will retry on first tool call): ${errorChainMessage(err)}`);
   });
 
-  const app = buildApp({ client, config });
+  const app = buildApp({ repos: createRepos(client), config });
   const httpServer = app.listen(config.port, () => {
     console.log(`mcp-actual listening on http://localhost:${config.port} (data dir: ${config.dataDir})`);
     console.log(`Actual server: ${config.serverUrl}, budget sync id: ${config.syncId}`);
+    const authOff = authDisabledByEnv() || !config.authToken;
     if (authDisabledByEnv()) {
       console.log('Auth: disabled (SECURE_LOCAL_NET) — /mcp is open on this network');
     } else if (config.authToken) {
       console.log('Auth: bearer token from MCP_ACTUAL_TOKEN');
     } else {
       console.log('Auth: disabled (no MCP_ACTUAL_TOKEN set) — /mcp is open on this network');
+    }
+    console.log(`Writes: ${config.enableWrites ? 'ENABLED' : 'disabled (read-only tools only)'}`);
+    // Writable *and* unauthenticated means anyone who can reach the port can
+    // modify the budget. Each half is a reasonable choice on its own, so the
+    // combination is what deserves a warning.
+    if (config.enableWrites && authOff) {
+      console.warn(
+        'WARNING: writes are enabled and /mcp is unauthenticated — anyone who can reach this port can modify ' +
+          'your budget. Set MCP_ACTUAL_TOKEN, or ACTUAL_ENABLE_WRITES=false for a read-only server.',
+      );
     }
   });
 

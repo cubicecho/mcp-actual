@@ -3,52 +3,19 @@ import * as api from '@actual-app/api';
 import type { Config } from '../config.ts';
 import { errorChainMessage } from '../errors.ts';
 
-/** One account plus its current balance, in the shape the MCP tool returns. */
-export interface AccountBalance {
-  id: string;
-  name: string;
-  /** Balance in minor units (cents) — Actual's native integer representation. */
-  balance: number;
-  /** The same balance as a decimal number of currency units, for display. */
-  balanceDecimal: number;
-  /** Tracking (off-budget) accounts are excluded from the budget's available funds. */
-  offBudget: boolean;
-  closed: boolean;
-}
-
-/** Accounts plus a total, so an agent does not have to sum them itself. */
-export interface AccountBalances {
-  accounts: AccountBalance[];
-  /** Sum of the on-budget, non-closed accounts — Actual's headline "balance". */
-  onBudgetTotal: number;
-  /** Sum of every non-closed account, on- and off-budget. */
-  total: number;
-}
-
-/**
- * The account shape the API hands back, derived from `getAccounts` rather than
- * imported — the entity type lives behind a deep `@actual-app/core` path that
- * is not part of the API package's public surface.
- */
-type RawAccount = Awaited<ReturnType<typeof api.getAccounts>>[number];
-
-/**
- * What the MCP layer needs from the client — narrower than {@link ActualClient}
- * so tools can be exercised against a stub without an Actual server.
- */
-export interface AccountBalanceSource {
-  getAccountBalances(): Promise<AccountBalances>;
-}
-
 /**
  * `@actual-app/api` is a process-wide singleton: `init` opens one SQLite budget
  * and every other call reads that global state, so two overlapping calls would
- * race. This client owns that global, initializes it lazily on first use, and
+ * race. This client owns that global, opens the budget lazily on first use, and
  * serializes every operation through a promise chain.
+ *
+ * It deliberately knows nothing about accounts, payees, or rules — the domain
+ * repositories in this directory build on {@link ActualClient.run}, and nothing
+ * outside `src/actual/` touches the library at all.
  */
-export class ActualClient implements AccountBalanceSource {
+export class ActualClient {
   private readonly config: Config;
-  /** Resolves once `init` + `downloadBudget` have succeeded; retried on failure. */
+  /** Resolves once `init` + `downloadBudget` have succeeded; cleared on failure so the next call retries. */
   private ready: Promise<void> | null = null;
   /** Tail of the serialized operation queue — every `run` links onto it. */
   private queue: Promise<unknown> = Promise.resolve();
@@ -64,32 +31,21 @@ export class ActualClient implements AccountBalanceSource {
   }
 
   /**
-   * Every account with its current balance. Syncs first so the numbers reflect
-   * what other Actual clients have written since the budget was downloaded.
+   * Run `fn` with the budget open, serialized behind every earlier operation.
+   * All Actual access goes through here — calling the library concurrently
+   * would race on the one open budget.
    */
-  async getAccountBalances(): Promise<AccountBalances> {
-    return this.run(async () => {
-      await api.sync();
-      const raw: RawAccount[] = await api.getAccounts();
-      const accounts: AccountBalance[] = [];
-      for (const account of raw) {
-        const balance = await api.getAccountBalance(account.id);
-        accounts.push({
-          id: account.id,
-          name: account.name,
-          balance,
-          balanceDecimal: api.utils.integerToAmount(balance),
-          offBudget: Boolean(account.offbudget),
-          closed: Boolean(account.closed),
-        });
+  run<T>(fn: () => Promise<T>): Promise<T> {
+    const result = this.queue.then(async () => {
+      if (this.shuttingDown) {
+        throw new Error('Actual client is shutting down');
       }
-      const open = accounts.filter((a) => !a.closed);
-      return {
-        accounts,
-        onBudgetTotal: open.filter((a) => !a.offBudget).reduce((sum, a) => sum + a.balance, 0),
-        total: open.reduce((sum, a) => sum + a.balance, 0),
-      };
+      await this.ensureReady();
+      return fn();
     });
+    // Keep the chain alive after a rejection — one failed call must not wedge the queue.
+    this.queue = result.catch(() => {});
+    return result;
   }
 
   /** Close the budget and release the API's resources. Safe to call more than once. */
@@ -104,20 +60,6 @@ export class ActualClient implements AccountBalanceSource {
       await api.shutdown().catch(() => {});
       this.ready = null;
     }
-  }
-
-  /** Serialize `fn` behind every earlier operation, ensuring the budget is open first. */
-  private run<T>(fn: () => Promise<T>): Promise<T> {
-    const result = this.queue.then(async () => {
-      if (this.shuttingDown) {
-        throw new Error('Actual client is shutting down');
-      }
-      await this.ensureReady();
-      return fn();
-    });
-    // Keep the chain alive after a rejection — one failed call must not wedge the queue.
-    this.queue = result.catch(() => {});
-    return result;
   }
 
   /**

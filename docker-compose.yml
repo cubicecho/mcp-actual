@@ -33,6 +33,9 @@ services:
       MCP_ACTUAL_TOKEN: ${MCP_ACTUAL_TOKEN:-}
       # `true` disables auth entirely — trusted networks only.
       SECURE_LOCAL_NET: ${SECURE_LOCAL_NET:-}
+      # Defaults to true: agents may modify the budget. Set false for a
+      # read-only server (write tools are then not advertised at all).
+      ACTUAL_ENABLE_WRITES: ${ACTUAL_ENABLE_WRITES:-}
       # Matches the /data volume above; change both together or not at all.
       DATA_DIR: /data
     restart: unless-stopped

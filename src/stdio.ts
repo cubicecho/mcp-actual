@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { ActualClient } from './actual/client.ts';
+import { ActualClient, createRepos } from './actual/index.ts';
 import { loadConfig } from './config.ts';
 import { errorChainMessage } from './errors.ts';
 import { createActualServer } from './mcp/server.ts';
@@ -15,11 +15,14 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const client = new ActualClient(config);
 
-  const server = createActualServer({ client });
+  const server = createActualServer({ repos: createRepos(client), enableWrites: config.enableWrites });
   const transport = new StdioServerTransport();
   await server.connect(transport);
   // Log to stderr — stdout is the MCP transport channel and must stay clean.
-  console.error(`mcp-actual stdio ready (Actual server: ${config.serverUrl}, data dir: ${config.dataDir})`);
+  console.error(
+    `mcp-actual stdio ready (Actual server: ${config.serverUrl}, data dir: ${config.dataDir}, ` +
+      `writes ${config.enableWrites ? 'enabled' : 'disabled'})`,
+  );
 
   const shutdown = () => {
     client
