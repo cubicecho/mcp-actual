@@ -1,0 +1,50 @@
+services:
+  mcp-actual:
+    build: .
+    image: mcp-actual
+    ports:
+      # host:container — change the left side only.
+      - '3000:3000'
+    volumes:
+      # Cached copy of the downloaded budget — keeps restarts fast.
+      # Contains a plaintext SQLite copy of your finances; treat it as sensitive.
+      - ./data:/data
+    # Values come from `.env` next to this file — copy .env.example to .env first.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # ── Required ──────────────────────────────────────────────────────────
+      # URL of the Actual sync server, e.g. https://budget.example.com. If Actual
+      # runs in Docker too, use its service name (http://actual_server:5006) and
+      # put both services on the same network rather than pointing at localhost —
+      # inside this container, localhost is this container.
+      ACTUAL_SERVER_URL: ${ACTUAL_SERVER_URL:?set ACTUAL_SERVER_URL in .env — the URL of your Actual sync server}
+      # The sync server's login password (Actual has one shared password, no username).
+      ACTUAL_PASSWORD: ${ACTUAL_PASSWORD:?set ACTUAL_PASSWORD in .env — your Actual sync server password}
+      # Which budget to open: Actual UI → Settings → Advanced settings → "Sync ID".
+      ACTUAL_SYNC_ID: ${ACTUAL_SYNC_ID:?set ACTUAL_SYNC_ID in .env — Actual → Settings → Advanced → Sync ID}
+
+      # ── Optional ──────────────────────────────────────────────────────────
+      # Only for budgets with end-to-end encryption enabled.
+      ACTUAL_ENCRYPTION_PASSWORD: ${ACTUAL_ENCRYPTION_PASSWORD:-}
+      # Bearer token required on /mcp requests (`openssl rand -hex 32`).
+      # With neither this nor SECURE_LOCAL_NET, /mcp is unauthenticated.
+      MCP_ACTUAL_TOKEN: ${MCP_ACTUAL_TOKEN:-}
+      # `true` disables auth entirely — trusted networks only.
+      SECURE_LOCAL_NET: ${SECURE_LOCAL_NET:-}
+      # Matches the /data volume above; change both together or not at all.
+      DATA_DIR: /data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          'fetch("http://localhost:" + (process.env.PORT || 3000) + "/api/status").then((r) => process.exit(r.status < 500 ? 0 : 1)).catch(() => process.exit(1))',
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
