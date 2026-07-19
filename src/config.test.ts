@@ -15,6 +15,19 @@ describe('loadConfig', () => {
     expect(config.port).toBe(3000);
     expect(config.authToken).toBeNull();
     expect(config.encryptionPassword).toBeUndefined();
+    expect(config.enableWrites).toBe(true);
+  });
+
+  it.each(['false', 'FALSE', '0', 'no', 'off'])('disables writes with ACTUAL_ENABLE_WRITES=%s', (value) => {
+    expect(loadConfig({ ...validEnv, ACTUAL_ENABLE_WRITES: value }).enableWrites).toBe(false);
+  });
+
+  it.each(['true', '1', 'yes', 'on'])('enables writes with ACTUAL_ENABLE_WRITES=%s', (value) => {
+    expect(loadConfig({ ...validEnv, ACTUAL_ENABLE_WRITES: value }).enableWrites).toBe(true);
+  });
+
+  it('rejects an unrecognized write-gate value rather than defaulting it on', () => {
+    expect(() => loadConfig({ ...validEnv, ACTUAL_ENABLE_WRITES: 'flase' })).toThrowError(/ACTUAL_ENABLE_WRITES/);
   });
 
   it('reads the optional variables when set', () => {

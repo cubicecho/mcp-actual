@@ -23,6 +23,12 @@ const configSchema = z.object({
   port: z.number().int().positive(),
   /** Bearer token guarding /api and /mcp; null when auth is off. */
   authToken: z.string().min(1).nullable(),
+  /**
+   * Whether mutating tools are served at all. When false they are omitted from
+   * `tools/list` entirely — an agent should never see a tool it cannot call.
+   * There is no second "destructive" tier: deletes are ordinary writes.
+   */
+  enableWrites: z.boolean(),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -32,6 +38,28 @@ function envValue(env: NodeJS.ProcessEnv, key: string): string | undefined {
   const raw = env[key];
   const trimmed = raw?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+const TRUTHY = new Set(['1', 'true', 'yes', 'on']);
+const FALSY = new Set(['0', 'false', 'no', 'off']);
+
+/**
+ * Parse a boolean env var, falling back to `fallback` when unset. An
+ * unrecognized value returns `undefined` so schema validation rejects it — a
+ * typo like `ACTUAL_ENABLE_WRITES=flase` must not silently mean "enabled".
+ */
+function envBoolean(env: NodeJS.ProcessEnv, key: string, fallback: boolean): boolean | undefined {
+  const raw = envValue(env, key)?.toLowerCase();
+  if (raw === undefined) {
+    return fallback;
+  }
+  if (TRUTHY.has(raw)) {
+    return true;
+  }
+  if (FALSY.has(raw)) {
+    return false;
+  }
+  return undefined;
 }
 
 /**
@@ -48,6 +76,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     dataDir: path.resolve(envValue(env, 'DATA_DIR') ?? './data'),
     port: Number(envValue(env, 'PORT') ?? 3000),
     authToken: envValue(env, 'MCP_ACTUAL_TOKEN') ?? null,
+    // Default on: the server is most useful when an agent can act, and the
+    // gate exists to be turned *off* deliberately for read-only deployments.
+    enableWrites: envBoolean(env, 'ACTUAL_ENABLE_WRITES', true),
   });
   if (!parsed.success) {
     const issues = parsed.error.issues.map(
@@ -67,4 +98,5 @@ const ENV_KEYS: Record<string, string> = {
   dataDir: 'DATA_DIR',
   port: 'PORT',
   authToken: 'MCP_ACTUAL_TOKEN',
+  enableWrites: 'ACTUAL_ENABLE_WRITES',
 };

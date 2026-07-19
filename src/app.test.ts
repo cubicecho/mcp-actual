@@ -17,6 +17,7 @@ const baseConfig: Config = {
   dataDir: '/tmp/mcp-actual-test',
   port: 3000,
   authToken: null,
+  enableWrites: true,
 };
 
 function app(config: Partial<Config> = {}) {
