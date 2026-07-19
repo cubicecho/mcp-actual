@@ -1,4 +1,4 @@
-import { ActualClient } from './actual/client.ts';
+import { ActualClient, createRepos } from './actual/index.ts';
 import { buildApp } from './app.ts';
 import { authDisabledByEnv } from './auth.ts';
 import { loadConfig } from './config.ts';
@@ -21,7 +21,7 @@ async function main(): Promise<void> {
     console.warn(`Could not open the budget at startup (will retry on first tool call): ${errorChainMessage(err)}`);
   });
 
-  const app = buildApp({ client, config });
+  const app = buildApp({ repos: createRepos(client), config });
   const httpServer = app.listen(config.port, () => {
     console.log(`mcp-actual listening on http://localhost:${config.port} (data dir: ${config.dataDir})`);
     console.log(`Actual server: ${config.serverUrl}, budget sync id: ${config.syncId}`);

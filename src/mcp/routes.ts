@@ -1,24 +1,25 @@
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { Router } from 'express';
-import type { AccountBalanceSource } from '../actual/client.ts';
+import type { ActualRepos } from '../actual/index.ts';
 import { errorMessage } from '../errors.ts';
 import { createActualServer } from './server.ts';
 
 export interface McpRouterDeps {
-  client: AccountBalanceSource;
+  repos: ActualRepos;
+  enableWrites: boolean;
 }
 
 /**
  * Streamable-HTTP MCP endpoint at `/mcp`. Stateless: a fresh `Server` +
  * transport per request, torn down when the response closes. Nothing here is
- * session-scoped — the budget state lives in the shared {@link ActualClient} —
- * so there is no reason to keep sessions around.
+ * session-scoped — the budget state lives behind the shared repos' client — so
+ * there is no reason to keep sessions around.
  */
 export function createMcpRouter(deps: McpRouterDeps): Router {
   const router = Router();
 
   router.all('/', async (req, res) => {
-    const server = createActualServer({ client: deps.client });
+    const server = createActualServer({ repos: deps.repos, enableWrites: deps.enableWrites });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,

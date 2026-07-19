@@ -1,5 +1,5 @@
 import express from 'express';
-import type { AccountBalanceSource } from './actual/client.ts';
+import type { ActualRepos } from './actual/index.ts';
 import { authDisabledByEnv, createAuthMiddleware } from './auth.ts';
 import type { Config } from './config.ts';
 import { errorMessage, HttpError } from './errors.ts';
@@ -7,13 +7,13 @@ import { createMcpRouter } from './mcp/routes.ts';
 import { SERVER_VERSION } from './version.ts';
 
 export interface AppDeps {
-  client: AccountBalanceSource;
+  repos: ActualRepos;
   config: Config;
 }
 
 /** Build the Express app (separate from listen() so tests can drive it with supertest). */
 export function buildApp(deps: AppDeps): express.Express {
-  const { client, config } = deps;
+  const { repos, config } = deps;
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '1mb' }));
@@ -28,7 +28,7 @@ export function buildApp(deps: AppDeps): express.Express {
     res.json({ name: 'mcp-actual', version: SERVER_VERSION, serverUrl: config.serverUrl });
   });
 
-  app.use('/mcp', auth, createMcpRouter({ client }));
+  app.use('/mcp', auth, createMcpRouter({ repos, enableWrites: config.enableWrites }));
 
   app.use((_req, res) => {
     res.status(404).json({ error: 'Not found' });
