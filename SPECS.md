@@ -54,8 +54,18 @@ tool is the cheapest fix.
 | `list_payees` | `getPayees` + `aqlQuery` for per-payee transaction count and last-used date | R |
 | `find_duplicate_payees` | `aqlQuery` + local similarity clustering | R |
 | `merge_payees` | `mergePayees` | W |
-| `update_payee` | `updatePayee` (rename, favorite, learn_categories) | W |
+| `update_payee` | `updatePayee` — **rename only** | W |
 | `create_payee` | `createPayee` | W |
+
+Two constraints found during implementation:
+
+- `APIPayeeEntity` is `Pick<PayeeEntity, 'id' | 'name' | 'transfer_acct'>`, so
+  `favorite` and `learn_categories` are not reachable through the public API.
+  `update_payee` renames and nothing else.
+- AQL has no `$max`, so per-payee usage is not a grouped aggregate. One query
+  selects `payee` and `date` for every transaction, newest first, and the counts
+  and last-used dates are folded in memory (`tallyUsage`). Two narrow columns
+  over a personal budget is cheap, and it yields both numbers from one query.
 
 `list_payees` must return usage counts — the raw API returns bare names, which
 is not enough to decide what to merge. `find_duplicate_payees` clusters
@@ -125,12 +135,21 @@ it pulls the server's state. Treated as a read.
 
 ## Work list
 
-1. `ACTUAL_ENABLE_WRITES` config flag + tool-registration gating.
-2. Split `src/mcp/server.ts` into per-domain tool modules
-   (`src/mcp/tools/{accounts,rules,payees,transactions,budgets,context}.ts`)
-   before the tool count makes one file unmanageable.
-3. `ActualClient` methods per domain, each serialized through the existing queue.
-4. Shared zod input schemas + a money/date validation helper.
-5. Tools in dependency order: context → transactions → payees → rules → budgets.
-6. Tests per domain against a stubbed client, plus config-gating tests.
-7. README tool table + `.env.example` entry for the new flag.
+All shipped:
+
+1. ✅ `ACTUAL_ENABLE_WRITES` config flag + tool-registration gating.
+2. ✅ Per-domain tool modules under `src/mcp/tools/`, behind a `ToolDefinition`
+   registry (`src/mcp/tool.ts`).
+3. ✅ Per-domain repositories under `src/actual/`, each serialized through
+   `ActualClient.run`.
+4. ✅ Shared zod input schemas (dates `YYYY-MM-DD`, months `YYYY-MM`, integer cents).
+5. ✅ Tools in dependency order: context → transactions → payees → rules → budgets.
+6. ✅ Tests against `stubRepos`, plus write-gate and annotation coverage.
+7. ✅ README tool table, `.env.example`, and compose entry for the flag.
+
+**Not verified against a live server.** The tests cover schema validation, the
+write gate, and the pure logic (`buildSearchFilter`, `groupDuplicates`,
+`tallyUsage`), but no test exercises a real Actual budget — the AQL queries and
+the write paths are only as correct as the API types and the library source they
+were read from. First run against a real budget should exercise one tool per
+domain before trusting the write tools.

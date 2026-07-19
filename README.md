@@ -4,13 +4,71 @@ An MCP server for [Actual Budget](https://github.com/actualbudget/actual). It
 connects to your Actual **sync server**, opens one budget file, and exposes it
 to MCP clients over streamable HTTP (`/mcp`) or stdio.
 
-**v0.1.0 (MVP) serves a single tool:**
+## Tools
 
-| Tool | Description |
-| --- | --- |
-| `list_accounts` | Every account with its current balance, plus on-budget and overall totals. |
+Read-only tools are always served. Tools marked ✏️ modify the budget and are
+served only when `ACTUAL_ENABLE_WRITES` is on (the default) — when it is off
+they are not advertised at all.
 
-Example result:
+**Accounts & context**
+
+| Tool | | Description |
+| --- | --- | --- |
+| `list_accounts` | | Every account with its current balance, plus on-budget and overall totals. |
+| `list_categories` | | Categories with their groups. Most budgeting and rule work starts here. |
+| `resolve_name_to_id` | | Exact-name lookup for accounts, categories, payees, and schedules. |
+| `list_schedules` | | Scheduled (recurring) transactions and their next due dates. |
+| `list_tags` | | Tags available to rules that match note tags. |
+| `get_note` | | Read the note attached to any entity. |
+| `sync_budget` | | Pull the latest changes from the Actual server. |
+| `update_note` | ✏️ | Replace an entity's note. |
+| `run_bank_sync` | ✏️ | Fetch new transactions from linked banks. |
+
+**Transactions**
+
+| Tool | | Description |
+| --- | --- | --- |
+| `search_transactions` | | Cross-account search by date, account, payee, category, notes, amount, and cleared state. |
+| `get_transactions` | | Every transaction in one account between two dates, uncapped. |
+| `update_transaction` | ✏️ | Change a transaction's category, payee, notes, cleared flag, date, or amount. |
+
+**Payees**
+
+| Tool | | Description |
+| --- | --- | --- |
+| `list_payees` | | Payees with transaction counts and last-used dates. |
+| `find_duplicate_payees` | | Cluster near-identical payee names into merge candidates. Suggests only. |
+| `create_payee` | ✏️ | Create a payee. |
+| `update_payee` | ✏️ | Rename a payee. |
+| `merge_payees` | ✏️ | Merge payees into a target. **Cannot be undone.** |
+
+**Rules**
+
+| Tool | | Description |
+| --- | --- | --- |
+| `describe_rule_schema` | | The exact rule format: fields, legal operators, and examples. Call before authoring a rule. |
+| `list_rules` | | All rules, or only those for one payee. |
+| `create_rule` | ✏️ | Create a rule from conditions and actions. |
+| `update_rule` | ✏️ | Replace a rule wholesale. |
+
+**Budgets**
+
+| Tool | | Description |
+| --- | --- | --- |
+| `list_budget_months` | | Every month the budget file covers. |
+| `get_budget_month` | | One month's totals and per-category budgeted/spent/balance. |
+| `set_budget_amount` | ✏️ | Set a category's budgeted amount for a month. |
+| `set_budget_carryover` | ✏️ | Roll a category's balance into the next month, or stop. |
+| `hold_for_next_month` | ✏️ | Hold surplus back for next month. |
+| `reset_budget_hold` | ✏️ | Release a held amount. |
+| `create_category` | ✏️ | Create a category in a group. |
+| `update_category` | ✏️ | Rename, move, or hide a category. |
+
+There are no delete tools — see [TODO_IDEAS.md](TODO_IDEAS.md). All amounts are
+integer cents (`amount`), with a decimal sibling (`amountDecimal`) for display;
+tools accept integers only.
+
+Example `list_accounts` result:
 
 ```json
 {
@@ -18,8 +76,8 @@ Example result:
     {
       "id": "729cb...",
       "name": "Checking",
-      "balance": 123456,
-      "balanceDecimal": 1234.56,
+      "amount": 123456,
+      "amountDecimal": 1234.56,
       "offBudget": false,
       "closed": false
     }
@@ -29,10 +87,8 @@ Example result:
 }
 ```
 
-`balance` is in minor units (cents) — Actual's native representation;
-`balanceDecimal` is the same number in currency units. Totals cover open
-(non-closed) accounts; `onBudgetTotal` excludes off-budget tracking accounts.
-The budget is synced with the server before every read.
+Totals cover open (non-closed) accounts; `onBudgetTotal` excludes off-budget
+tracking accounts. The budget is synced with the server before every read.
 
 ## What you need before you start
 
@@ -63,6 +119,7 @@ fill in the three required values. `docker compose` reads that same `.env`.
 | `ACTUAL_ENCRYPTION_PASSWORD` | | — | Only if the budget has end-to-end encryption enabled |
 | `MCP_ACTUAL_TOKEN` | | — | Bearer token clients must send to `/mcp`; unset means no auth |
 | `SECURE_LOCAL_NET` | | — | `true` disables auth entirely (trusted networks only) |
+| `ACTUAL_ENABLE_WRITES` | | `true` | `false` serves only read-only tools; write tools are not advertised at all |
 | `DATA_DIR` | | `./data` (`/data` in Docker) | Where the downloaded budget is cached |
 | `PORT` | | `3000` | HTTP port |
 
@@ -143,7 +200,12 @@ configured Actual server URL) used by the Docker healthcheck.
 
 - The server holds your Actual password and reads your full financial data.
   Set `MCP_ACTUAL_TOKEN` unless it is unreachable from untrusted networks.
-- The MVP is **read-only** — no tool mutates the budget.
+- **Writes are on by default.** An agent connected to this server can change
+  categories, rename and merge payees, create rules, and move budgeted money.
+  Combined with no bearer token, anyone who can reach the port can do the same —
+  the server warns loudly at startup when it detects that combination. Set
+  `ACTUAL_ENABLE_WRITES=false` for a read-only deployment.
+- `merge_payees` **cannot be undone**. There are no delete tools at all.
 - `DATA_DIR` contains a plaintext SQLite copy of the budget. Treat it as
   sensitive; do not commit it (`data/` is gitignored).
 
