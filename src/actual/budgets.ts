@@ -66,12 +66,23 @@ type RawCategory = Awaited<ReturnType<typeof api.getCategories>>[number] & {
   hidden?: unknown;
 };
 
-export function createBudgetsRepo(client: ActualClient): BudgetsRepo {
-  const readCategories = async (includeHidden: boolean): Promise<Category[]> => {
-    const groups = await api.getCategoryGroups({ hidden: includeHidden });
-    const groupNames = new Map(groups.map((group) => [group.id, group.name]));
-    const raw = (await api.getCategories({ hidden: includeHidden })) as RawCategory[];
-    return raw.map((category) => {
+/** A group as `getCategoryGroups` returns it — only the fields the mapping reads. */
+interface RawCategoryGroup {
+  id: string;
+  name: string;
+  hidden?: boolean;
+}
+
+/**
+ * Join the flat category list to its groups and apply the hidden rule. A
+ * category counts as hidden when its own flag is set *or* its group is hidden —
+ * that is what the Actual UI shows.
+ */
+export function mapCategories(groups: RawCategoryGroup[], raw: RawCategory[], includeHidden: boolean): Category[] {
+  const groupNames = new Map(groups.map((group) => [group.id, group.name]));
+  const hiddenGroups = new Set(groups.filter((group) => group.hidden).map((group) => group.id));
+  return raw
+    .map((category) => {
       const groupId = str(category.group_id) ?? str(category.group);
       return {
         id: category.id,
@@ -79,10 +90,25 @@ export function createBudgetsRepo(client: ActualClient): BudgetsRepo {
         groupId,
         groupName: groupId ? groupNames.get(groupId) : undefined,
         isIncome: Boolean(category.is_income),
-        hidden: Boolean(category.hidden),
+        hidden: Boolean(category.hidden) || (groupId !== undefined && hiddenGroups.has(groupId)),
       };
-    });
-  };
+    })
+    .filter((category) => includeHidden || !category.hidden);
+}
+
+export function createBudgetsRepo(client: ActualClient): BudgetsRepo {
+  /**
+   * Read the *unfiltered* lists and hide locally. Actual's `hidden` option is a
+   * filter, not an include-flag: `hidden: true` returns only hidden entries (so
+   * a budget with nothing hidden comes back empty) and `hidden: false` drops
+   * every category living in a hidden group.
+   */
+  const readCategories = async (includeHidden: boolean): Promise<Category[]> =>
+    mapCategories(
+      (await api.getCategoryGroups()) as RawCategoryGroup[],
+      (await api.getCategories()) as RawCategory[],
+      includeHidden,
+    );
 
   /** Read one category's post-change budget state, so a write reports what actually landed. */
   const readBudgetCategory = async (month: string, categoryId: string): Promise<BudgetCategory | null> => {
