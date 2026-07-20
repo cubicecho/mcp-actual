@@ -37,6 +37,8 @@ export class ActualClient {
   private lib: ActualLib | null = null;
   /** Memoized shutdown, so concurrent `close` calls await one teardown. */
   private closing: Promise<void> | null = null;
+  /** True while an operation has passed its deadline but not yet settled. */
+  private stalled = false;
 
   constructor(config: Config) {
     this.config = config;
@@ -52,17 +54,63 @@ export class ActualClient {
    * All Actual access goes through here — calling the library concurrently
    * would race on the one open budget.
    */
-  run<T>(fn: () => Promise<T>): Promise<T> {
-    const result = this.queue.then(async () => {
+  run<T>(fn: () => Promise<T>, options?: { timeoutMs?: number }): Promise<T> {
+    const timeoutMs = options?.timeoutMs ?? this.config.timeoutMs;
+    // Checked before enqueuing, not inside the queued body: while an operation
+    // is hung the queue never advances, so a check in there would itself wait
+    // out the full deadline and report a timeout instead of the real reason.
+    // Failing immediately turns an invisible wait into a legible error.
+    if (this.stalled) {
+      return Promise.reject(
+        new Error(
+          'Actual is not responding: a previous operation passed its deadline and has not finished. Every call ' +
+            'is serialized behind it, so nothing can run until it does. Restart the server if this persists.',
+        ),
+      );
+    }
+    const started = this.queue.then(async () => {
       if (this.shuttingDown) {
         throw new Error('Actual client is shutting down');
       }
       await this.ensureReady();
       return fn();
     });
-    // Keep the chain alive after a rejection — one failed call must not wedge the queue.
-    this.queue = result.catch(() => {});
-    return result;
+
+    // The queue must keep waiting for the *real* operation even after the caller
+    // has given up. `@actual-app/api` takes no AbortSignal, so a timed-out call
+    // is still running against the shared budget; letting the next one start
+    // would break the serialization this class exists to provide.
+    this.queue = started.catch(() => {});
+
+    return this.withDeadline(started, timeoutMs);
+  }
+
+  /**
+   * Reject the caller once `timeoutMs` elapses, while leaving the underlying
+   * operation to finish on its own. The client is marked stalled meanwhile, so
+   * later calls fail immediately instead of queueing invisibly, and recovers by
+   * itself if the operation eventually settles.
+   */
+  private withDeadline<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.stalled = true;
+        reject(new Error(`Actual operation timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      timer.unref?.();
+      operation.then(
+        (value) => {
+          clearTimeout(timer);
+          this.stalled = false;
+          resolve(value);
+        },
+        (err: unknown) => {
+          clearTimeout(timer);
+          this.stalled = false;
+          reject(err as Error);
+        },
+      );
+    });
   }
 
   /**
@@ -75,11 +123,11 @@ export class ActualClient {
    * silently answering from stale data is the failure mode this exists to
    * prevent.
    */
-  read<T>(fn: () => Promise<T>): Promise<T> {
+  read<T>(fn: () => Promise<T>, options?: { timeoutMs?: number }): Promise<T> {
     return this.run(async () => {
       await api.sync();
       return fn();
-    });
+    }, options);
   }
 
   /**

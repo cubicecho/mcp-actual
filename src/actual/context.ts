@@ -36,6 +36,13 @@ export type RawSchedule = Awaited<ReturnType<typeof api.getSchedules>>[number] &
   posts_transaction?: unknown;
 };
 
+/**
+ * Bank sync talks to a third party and is rate-limited at their end, so it is
+ * legitimately slow — minutes, not seconds. It gets its own deadline rather
+ * than tripping the general one, which exists to catch hangs.
+ */
+const BANK_SYNC_TIMEOUT_MS = 10 * 60 * 1000;
+
 function str(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
@@ -138,25 +145,28 @@ export function createContextRepo(client: ActualClient): ContextRepo {
      * have skipped that account regardless.
      */
     runBankSync: (accountId) =>
-      client.read(async () => {
-        const { data } = (await api.aqlQuery(
-          api.q('accounts').filter({ closed: false }).select(['id', 'name', 'account_id']),
-        )) as { data: { id: string; name: string; account_id?: string | null }[] };
-        const linked = data.filter((account) => account.account_id);
-        if (accountId) {
-          if (!linked.some((account) => account.id === accountId)) {
-            throw new Error(
-              `Account "${accountId}" cannot bank-sync: it is closed, does not exist, or is not linked to a bank. ` +
-                `Linked accounts: ${linked.map((account) => account.name).join(', ') || '(none)'}`,
-            );
+      client.read(
+        async () => {
+          const { data } = (await api.aqlQuery(
+            api.q('accounts').filter({ closed: false }).select(['id', 'name', 'account_id']),
+          )) as { data: { id: string; name: string; account_id?: string | null }[] };
+          const linked = data.filter((account) => account.account_id);
+          if (accountId) {
+            if (!linked.some((account) => account.id === accountId)) {
+              throw new Error(
+                `Account "${accountId}" cannot bank-sync: it is closed, does not exist, or is not linked to a bank. ` +
+                  `Linked accounts: ${linked.map((account) => account.name).join(', ') || '(none)'}`,
+              );
+            }
+          } else if (linked.length === 0) {
+            throw new Error('No open account is linked to a bank, so there is nothing to sync.');
           }
-        } else if (linked.length === 0) {
-          throw new Error('No open account is linked to a bank, so there is nothing to sync.');
-        }
-        await api.runBankSync(accountId ? { accountId } : undefined);
-        const synced = accountId ? linked.filter((account) => account.id === accountId) : linked;
-        return { syncedAccounts: synced.map((account) => account.name) };
-      }),
+          await api.runBankSync(accountId ? { accountId } : undefined);
+          const synced = accountId ? linked.filter((account) => account.id === accountId) : linked;
+          return { syncedAccounts: synced.map((account) => account.name) };
+        },
+        { timeoutMs: BANK_SYNC_TIMEOUT_MS },
+      ),
 
     serverVersion: () =>
       client.run(async () => {

@@ -40,20 +40,22 @@ export interface ActualServerDeps {
 }
 
 /** Every tool this server can serve, before the write gate is applied. */
-export function allTools(repos: ActualRepos): ToolDefinition[] {
+export function allTools(repos: ActualRepos, enableWrites = true): ToolDefinition[] {
   return [
     ...accountTools(repos),
     ...contextTools(repos),
     ...transactionTools(repos),
     ...payeeTools(repos),
-    ...ruleTools(repos),
+    // `preview_rule_effects` is a read tool that can nonetheless insert a payee,
+    // so it needs to know whether writing is permitted at all.
+    ...ruleTools(repos, enableWrites),
     ...budgetTools(repos),
   ] as ToolDefinition[];
 }
 
 /** The tools actually served, given the write gate. */
 export function enabledTools(repos: ActualRepos, enableWrites: boolean): ToolDefinition[] {
-  const tools = allTools(repos);
+  const tools = allTools(repos, enableWrites);
   return enableWrites ? tools : tools.filter((tool) => !tool.write);
 }
 

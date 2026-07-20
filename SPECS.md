@@ -248,6 +248,34 @@ every update to avoid a `TypeError` thrown from inside the library.
 \* `sync_budget` mutates nothing locally that the user did not already cause —
 it pulls the server's state. Treated as a read.
 
+## Operational decisions
+
+- **Auth fails closed.** The server refuses to start without `MCP_ACTUAL_TOKEN`
+  unless `SECURE_LOCAL_NET=true` states that an unauthenticated server is
+  intended. An unset variable is indistinguishable from a misspelled one, so
+  starting-and-warning turned one typo into an open, writable server over
+  someone's finances. Read-only deployments are held to the same rule — the data
+  is exposed either way.
+- **Every operation has a deadline** (`ACTUAL_TIMEOUT_MS`, default 120s). Calls
+  are serialized through one queue, so an unbounded hang stalls the whole server
+  rather than one request. On timeout the *caller* is rejected but the queue
+  keeps waiting for the real operation: `@actual-app/api` takes no `AbortSignal`,
+  so a timed-out call is still running against the shared budget and starting
+  the next one would break the serialization the client exists to provide.
+  Meanwhile the client is marked stalled and later calls fail immediately
+  instead of queueing invisibly, recovering by itself if the operation settles.
+  `run_bank_sync` passes its own 10-minute deadline: it is legitimately slow,
+  and the general timeout exists to catch hangs, not slowness.
+- **`@actual-app/api` is pinned exactly**, not caret-ranged. The behaviours
+  documented above are internal — handler names, split modes, field renames,
+  which fields a model's `toExternal` emits — and a minor release can change any
+  of them silently. Re-run this audit when bumping it.
+- **A read tool that can write is refused, not tolerated.**
+  `preview_rule_effects` is read-only except that Actual's engine inserts a
+  payee for a `set payee_name` rule. With `ACTUAL_ENABLE_WRITES=false` the
+  operator has said this server may not change the budget, so the preview
+  refuses with the offending rule ids rather than writing behind the gate.
+
 ## Prompts
 
 The server exposes MCP **prompts** as well as tools, in `src/mcp/prompts.ts`,

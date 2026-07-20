@@ -201,7 +201,7 @@ const previewFilterSchema = {
     .describe('How many matching transactions to skip, for paging past `limit`. Keep the other filters identical.'),
 };
 
-export function ruleTools(repos: Pick<ActualRepos, 'rules'>): ToolDefinition[] {
+export function ruleTools(repos: Pick<ActualRepos, 'rules'>, enableWrites: boolean): ToolDefinition[] {
   return [
     defineTool({
       name: 'describe_rule_schema',
@@ -321,7 +321,13 @@ export function ruleTools(repos: Pick<ActualRepos, 'rules'>): ToolDefinition[] {
             offset: z.number().int().min(0).optional(),
           })
           .parse(args);
-        return repos.rules.previewEffects({ ...filters, limit: filters.limit ?? 100 });
+        // Previewing can insert a payee when a rule sets `payee_name` (Actual's
+        // engine creates unknown payees as it finalizes), so on a read-only
+        // server the repo refuses instead of writing behind the gate.
+        return repos.rules.previewEffects(
+          { ...filters, limit: filters.limit ?? 100 },
+          { allowPayeeCreation: enableWrites },
+        );
       },
     }),
 

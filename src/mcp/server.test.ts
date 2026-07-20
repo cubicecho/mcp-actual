@@ -147,6 +147,45 @@ describe('createActualServer', () => {
       expect(seen).toEqual({ uncategorized: true, dateFrom: '2026-01-01', limit: 100 });
     });
 
+    it('tells the repo whether payee creation is permitted, per the write gate', async () => {
+      // Previewing runs Actual's engine, which inserts a payee for a
+      // `set payee_name` rule — a write. With writes off the repo must refuse
+      // rather than perform it behind the gate's back.
+      const seen: unknown[] = [];
+      const preview = { entries: [], scanned: 0, truncated: false, createsPayees: [] };
+      for (const enableWrites of [true, false]) {
+        const client = await connect(
+          stubRepos({
+            rules: {
+              previewEffects: async (_filters, options) => {
+                seen.push(options);
+                return preview;
+              },
+            },
+          }),
+          enableWrites,
+        );
+        await client.callTool({ name: 'preview_rule_effects', arguments: {} });
+      }
+      expect(seen).toEqual([{ allowPayeeCreation: true }, { allowPayeeCreation: false }]);
+    });
+
+    it('surfaces the repo refusal as a readable tool error', async () => {
+      const client = await connect(
+        stubRepos({
+          rules: {
+            previewEffects: async () => {
+              throw new Error('Cannot preview: 1 rule(s) set `payee_name`');
+            },
+          },
+        }),
+        false,
+      );
+      const result = await client.callTool({ name: 'preview_rule_effects', arguments: {} });
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toMatch(/payee_name/);
+    });
+
     it('is advertised as a read tool, so it survives the write gate', async () => {
       const { tools } = await (await connect(stubRepos(), false)).listTools();
       const names = tools.map((tool) => tool.name);

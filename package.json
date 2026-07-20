@@ -30,7 +30,7 @@
     "clean": "rm -rf node_modules dist"
   },
   "dependencies": {
-    "@actual-app/api": "^26.7.0",
+    "@actual-app/api": "26.7.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "express": "^5.0.0",
     "zod": "^3.24.0"

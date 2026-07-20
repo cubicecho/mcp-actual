@@ -8,7 +8,7 @@ export interface RulesRepo {
   list(options?: { payeeId?: string }): Promise<Rule[]>;
   create(rule: RuleInput): Promise<Rule>;
   update(id: string, rule: RuleInput): Promise<Rule>;
-  previewEffects(filters: TransactionSearch): Promise<RulePreview>;
+  previewEffects(filters: TransactionSearch, options?: { allowPayeeCreation?: boolean }): Promise<RulePreview>;
   applyActions(transactionIds: string[], actions: unknown[]): Promise<RuleApplyResult>;
 }
 
@@ -198,7 +198,7 @@ export function createRulesRepo(client: ActualClient): RulesRepo {
      * actions could do this are reported in `createsPayees` so the caller is
      * never surprised by it.
      */
-    previewEffects: (filters) =>
+    previewEffects: (filters, options) =>
       client.read(async () => {
         // Fetch one extra row: if it comes back, more matched than we scanned.
         const rows = await fetchRaw(buildSearchFilter(filters), filters.limit + 1, filters.offset);
@@ -218,6 +218,17 @@ export function createRulesRepo(client: ActualClient): RulesRepo {
             ),
           )
           .map((rule) => rule.id);
+        // Refuse rather than write behind the gate's back. With writes
+        // disabled the operator has said this server may not change the budget,
+        // and inserting a payee — even one the next import would have created —
+        // is still a change they did not authorize.
+        if (createsPayees.length > 0 && !options?.allowPayeeCreation) {
+          throw new Error(
+            `Cannot preview: ${createsPayees.length} rule(s) set \`payee_name\`, and Actual's engine creates an ` +
+              'unknown payee as it finalizes — so previewing would write to the budget. Writes are disabled on ' +
+              `this server. Rule ids: ${createsPayees.join(', ')}`,
+          );
+        }
 
         const entries: RulePreviewEntry[] = [];
         for (const row of scanned) {
