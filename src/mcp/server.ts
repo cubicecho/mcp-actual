@@ -1,8 +1,10 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { ZodRawShape } from 'zod';
+import { z } from 'zod';
 import type { ActualRepos } from '../actual/index.ts';
 import { errorChainMessage } from '../errors.ts';
 import { SERVER_VERSION } from '../version.ts';
-import { enabledPrompts } from './prompts.ts';
+import { allPrompts } from './prompts.ts';
 import type { ToolDefinition } from './tool.ts';
 import { accountTools } from './tools/accounts.ts';
 import { budgetTools } from './tools/budgets.ts';
@@ -10,6 +12,26 @@ import { contextTools } from './tools/context.ts';
 import { payeeTools } from './tools/payees.ts';
 import { ruleTools } from './tools/rules.ts';
 import { transactionTools } from './tools/transactions.ts';
+
+/**
+ * Rebuild a prompt's argument schema so a request omitting `arguments`
+ * altogether still validates.
+ *
+ * Every prompt argument is optional, but `registerPrompt` wraps the shape with
+ * `objectFromShape` and then parses `request.params.arguments` against it —
+ * and `z.object(...)` rejects `undefined` outright. A client invoking a prompt
+ * bare, the most natural way to use one, would get "Required" instead of the
+ * prompt. `.default({})` fixes the parse but hides `.shape`, which the SDK
+ * reads to advertise the arguments in `prompts/list`, so the shape is
+ * re-attached. Applied *after* registration because `registerPrompt` re-wraps
+ * whatever it is given.
+ *
+ * The prompt tests cover both halves, so an SDK upgrade that makes this
+ * unnecessary — or breaks it — fails loudly rather than silently.
+ */
+function tolerateMissingArguments(shape: ZodRawShape) {
+  return Object.assign(z.object(shape).default({}), { shape });
+}
 
 export interface ActualServerDeps {
   repos: ActualRepos;
@@ -78,14 +100,23 @@ export function createActualServer(deps: ActualServerDeps): McpServer {
     );
   }
 
-  for (const prompt of enabledPrompts(deps.enableWrites)) {
-    server.registerPrompt(
+  // Prompts are not write-gated: they cannot change anything, and a read-only
+  // server is where an agent most needs the workflow to tell it so. Each renders
+  // against the gate instead of being withheld by it.
+  const context = { enableWrites: deps.enableWrites };
+  for (const prompt of allPrompts()) {
+    const registered = server.registerPrompt(
       prompt.name,
       { title: prompt.title, description: prompt.description, argsSchema: prompt.argsSchema },
       (args: Record<string, string | undefined>) => ({
-        messages: [{ role: 'user' as const, content: { type: 'text' as const, text: prompt.build(args ?? {}) } }],
+        messages: [
+          { role: 'user' as const, content: { type: 'text' as const, text: prompt.build(args ?? {}, context) } },
+        ],
       }),
     );
+    // The slot is typed as a plain object schema; a ZodDefault carrying `shape`
+    // satisfies both readers at runtime but not that declared type.
+    registered.argsSchema = tolerateMissingArguments(prompt.argsSchema) as unknown as typeof registered.argsSchema;
   }
 
   return server;

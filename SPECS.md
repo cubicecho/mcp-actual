@@ -170,28 +170,41 @@ it pulls the server's state. Treated as a read.
 The server exposes MCP **prompts** as well as tools, in `src/mcp/prompts.ts`,
 behind the same registry-plus-gate shape as tools.
 
-| Prompt | | |
-| --- | --- | --- |
-| `backfill_rule` | preview → confirm → apply, for backfilling a rule over existing transactions | W |
+| Prompt | |
+| --- | --- |
+| `explore_budget` | Orientation: what the budget holds, which tool answers what, and the conventions |
+| `categorize_transactions` | Triage uncategorized spending by payee, propose categories, apply on approval |
+| `cleanup_payees` | Cluster duplicate merchant names, review, merge on confirmation |
+| `backfill_rule` | Preview → confirm → apply, for backfilling a rule over existing transactions |
 
 A prompt is guidance, not access: it cannot reach the budget, so all it adds is
-an ordering over tool calls the agent would otherwise have to infer. That is
-worth having precisely where the tools are sharp — `preview_rule_effects`
-reports the whole rule set rather than one rule, and `apply_rule_actions` does
-not re-check conditions — so `backfill_rule` exists to force preview-then-
-confirm before any bulk write.
+an ordering over tool calls, and the conventions (sync first, ids over names,
+integer cents, truncation is not completeness) an agent would otherwise have to
+rediscover. That is worth most precisely where the tools are sharp —
+`preview_rule_effects` reports the whole rule set rather than one rule,
+`apply_rule_actions` does not re-check conditions, and `merge_payees` cannot be
+undone.
 
-Two constraints, both observed rather than assumed:
+Three decisions, the last two observed rather than assumed:
 
-- **Prompts are write-gated like tools.** A workflow ending in a mutating tool
-  is withheld when `ACTUAL_ENABLE_WRITES` is off, for the same reason those
-  tools are. Since `backfill_rule` is currently the only prompt, a read-only
-  server registers none and therefore advertises no prompts capability at all —
-  `prompts/list` returns *Method not found*, not an empty list.
+- **Prompts are *not* write-gated.** They mutate nothing, and a read-only server
+  is exactly where an agent most needs to be told that writing is not an
+  option — withholding the workflow would leave it improvising instead. Each
+  prompt renders against a `PromptContext`, so its write steps are replaced by
+  an explicit "this is read-only, stop after the analysis" rather than
+  disappearing. Gating them would also mean a read-only server registers no
+  prompts at all and so advertises no prompts capability, making `prompts/list`
+  fail with *Method not found* instead of returning a list.
 - **A declared `argsSchema` makes `arguments` mandatory**, even when every
   argument in it is optional: a request omitting the member outright fails
-  validation. Clients must send `arguments: {}`. This is the same sharp edge
-  already worked around for no-input tools in `server.ts`.
+  validation, so a client invoking a prompt bare gets an error instead of the
+  prompt. `registerPrompt` re-wraps whatever shape it is handed, so
+  `tolerateMissingArguments` in `server.ts` patches the registered schema
+  afterwards to a `.default({})` that still exposes `.shape` for the listing.
+  Tests cover both halves, so an SDK upgrade that changes this fails loudly.
+- **Arguments are always optional.** A prompt asks the user for what it needs
+  rather than failing, so it stays useful when a client offers no way to fill
+  arguments in.
 
 ## Conventions for new tools
 

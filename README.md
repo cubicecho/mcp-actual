@@ -97,18 +97,25 @@ tracking accounts. The budget is synced with the server before every read.
 
 ## Prompts
 
-The server also exposes an MCP prompt, so a client can pull a vetted workflow
-instead of you writing one.
+The server exposes MCP prompts, so a client can pull a vetted workflow instead
+of you writing one. Start with `explore_budget`.
 
-| Prompt | | |
+| Prompt | Arguments | |
 | --- | --- | --- |
-| `backfill_rule` | ✏️ | Apply a rule to transactions that already exist: author it, preview what changes, confirm, then apply. |
+| `explore_budget` | `question` | What the budget holds and which tool answers what. The orientation prompt. |
+| `categorize_transactions` | `period` | Triage uncategorized spending by payee, propose a category for each, apply what you approve. |
+| `cleanup_payees` | `focus` | Group duplicate merchant names ("AMZN Mktp US*2H4" vs "Amazon"), review, merge on confirmation. |
+| `backfill_rule` | `goal`, `scope` | Apply a rule to transactions that already exist: author it, preview what changes, confirm, then apply. |
 
-It takes optional `goal` ("categorize Starbucks as Coffee") and `scope` ("since
-2026-01-01") arguments, and asks rather than guessing when they are absent. Use
-it in preference to calling `apply_rule_actions` yourself — that tool applies
-actions unconditionally, and the prompt is what enforces previewing first. Like
-the write tools, it is not advertised when `ACTUAL_ENABLE_WRITES` is off.
+Every argument is optional — the prompt asks rather than guessing — and the
+prompts are available whether or not writes are enabled. With
+`ACTUAL_ENABLE_WRITES` off they render a read-only variant that stops after the
+analysis instead of vanishing, so the agent is told writing is unavailable
+rather than left to improvise.
+
+Prefer these over driving the sharp tools yourself: `apply_rule_actions` applies
+actions unconditionally and `merge_payees` cannot be undone, and the prompts are
+what enforce previewing and confirming first.
 
 ## What you need before you start
 

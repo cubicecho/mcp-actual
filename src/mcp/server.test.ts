@@ -200,41 +200,80 @@ describe('createActualServer', () => {
     });
   });
 
-  describe('the backfill_rule prompt', () => {
-    it('advertises the prompt with its arguments', async () => {
+  describe('prompts', () => {
+    const PROMPT_NAMES = ['explore_budget', 'categorize_transactions', 'cleanup_payees', 'backfill_rule'];
+
+    /** Fetch a prompt's rendered text. */
+    async function render(name: string, args: Record<string, string> = {}, enableWrites = true): Promise<string> {
+      const client = await connect(stubRepos(), enableWrites);
+      const result = await client.getPrompt({ name, arguments: args });
+      return (result.messages[0]!.content as { text: string }).text;
+    }
+
+    it('advertises every prompt with its arguments', async () => {
       const { prompts } = await (await connect(stubRepos())).listPrompts();
-      const prompt = prompts.find((entry) => entry.name === 'backfill_rule');
-      expect(prompt).toBeDefined();
-      expect(prompt?.arguments?.map((arg) => arg.name).sort()).toEqual(['goal', 'scope']);
+      expect(prompts.map((entry) => entry.name).sort()).toEqual([...PROMPT_NAMES].sort());
+      const backfill = prompts.find((entry) => entry.name === 'backfill_rule');
+      expect(backfill?.arguments?.map((arg) => arg.name).sort()).toEqual(['goal', 'scope']);
+      // Every argument is optional, so none may be advertised as required.
+      expect(prompts.flatMap((entry) => entry.arguments ?? []).every((arg) => !arg.required)).toBe(true);
     });
 
-    it('weaves the goal and scope into the workflow', async () => {
+    it('renders when the request omits arguments entirely', async () => {
+      // A declared argsSchema otherwise rejects a bare call outright, which is
+      // the most natural way for a client to invoke an all-optional prompt.
       const client = await connect(stubRepos());
-      const result = await client.getPrompt({
-        name: 'backfill_rule',
-        arguments: { goal: 'categorize Starbucks as Coffee', scope: 'since 2026-01-01' },
+      for (const name of PROMPT_NAMES) {
+        const result = await client.getPrompt({ name });
+        expect((result.messages[0]!.content as { text: string }).text.length).toBeGreaterThan(0);
+      }
+    });
+
+    it('serves every prompt in read-only mode too', async () => {
+      const { prompts } = await (await connect(stubRepos(), false)).listPrompts();
+      expect(prompts.map((entry) => entry.name).sort()).toEqual([...PROMPT_NAMES].sort());
+    });
+
+    it('weaves arguments into the workflow, and asks rather than guessing without them', async () => {
+      const filled = await render('backfill_rule', {
+        goal: 'categorize Starbucks as Coffee',
+        scope: 'since 2026-01-01',
       });
-      const text = (result.messages[0]!.content as { text: string }).text;
-      expect(text).toContain('The rule I want: categorize Starbucks as Coffee');
-      expect(text).toContain('Limit the backfill to: since 2026-01-01');
-      // The ordering the tools depend on must survive into the rendered prompt.
+      expect(filled).toContain('The rule I want: categorize Starbucks as Coffee');
+      expect(filled).toContain('Limit the backfill to: since 2026-01-01');
+      expect(await render('backfill_rule')).toContain('do not guess a rule');
+      expect(await render('categorize_transactions')).toContain('Ask me which period to cover');
+    });
+
+    it('keeps preview ahead of apply in the rule workflow', async () => {
+      const text = await render('backfill_rule');
       expect(text.indexOf('preview_rule_effects')).toBeLessThan(text.indexOf('apply_rule_actions'));
     });
 
-    it('tells the agent to ask rather than invent a rule when called with no arguments', async () => {
-      const client = await connect(stubRepos());
-      // Both arguments are optional, but a declared argsSchema still rejects a
-      // request carrying no `arguments` member at all — clients must send `{}`.
-      const result = await client.getPrompt({ name: 'backfill_rule', arguments: {} });
-      const text = (result.messages[0]!.content as { text: string }).text;
-      expect(text).toContain('do not guess a rule');
+    it('drops the write steps and says so when writes are disabled', async () => {
+      for (const [name, tool] of [
+        ['backfill_rule', 'apply_rule_actions'],
+        ['cleanup_payees', 'merge_payees'],
+        ['categorize_transactions', 'update_transaction'],
+      ] as const) {
+        const text = await render(name, {}, false);
+        expect(text).toContain('read-only mode');
+        expect(text).not.toContain(tool);
+      }
     });
 
-    it('is withheld when writes are off, since it ends in a write tool', async () => {
-      const client = await connect(stubRepos(), false);
-      // Withholding the only prompt leaves the server with no prompts
-      // capability at all, so the method is absent rather than returning empty.
-      await expect(client.listPrompts()).rejects.toThrow(/Method not found/);
+    it('names the write tools when writes are enabled', async () => {
+      expect(await render('cleanup_payees')).toContain('merge_payees');
+      expect(await render('categorize_transactions')).toContain('update_transaction');
+    });
+
+    it('warns against merging transfer payees, which cannot be undone', async () => {
+      expect(await render('cleanup_payees')).toContain('transferAccountId');
+    });
+
+    it('reports the write gate honestly in the orientation prompt', async () => {
+      expect(await render('explore_budget')).toContain('Writes are ENABLED');
+      expect(await render('explore_budget', {}, false)).toContain('Writes are DISABLED');
     });
   });
 
