@@ -99,6 +99,26 @@ source rather than inferred from its types:
   `updated` field is `transfersUpdated` when `runTransfers` is on (the default),
   which is empty for an ordinary categorization. `applyActions` therefore
   confirms by reading the rows back instead of echoing that field.
+- **`api/transaction-update` does not await its own write.** It ends with
+  `return handlers['transactions-batch-update'](diff)['updated']` — indexing the
+  promise rather than awaiting it — so the write is still in flight when
+  `updateTransaction` resolves, and an immediate read-back can return the *old*
+  row. `update` therefore polls until a field it changed actually moves, instead
+  of trusting the ordering.
+- **`getTransactions` returns splits grouped.** `api/transactions-get` queries
+  with `splits: 'grouped'`, so a split arrives as one parent carrying its legs
+  in `subtransactions`; the legs are not rows. `listForAccount` flattens parent
+  and legs, or every leg — and the categories that make a split meaningful —
+  would silently vanish from the "exhaustive" per-account read.
+- **Income categories report `received`, not `spent`.** `api/budget-month`
+  branches on `group.is_income`, and on the default envelope budget an income
+  category carries *only* `received`. Reading `spent` off one reports a real
+  salary as 0, so `BudgetCategory` carries `isIncome` and `received`.
+- **Account balances are as of today.** `api/account-balance` defaults `cutoff`
+  to `new Date()` and filters `date <= cutoff`, while Actual's own account
+  screen sums without a date bound. Future-dated transactions are therefore
+  excluded here. Kept ("current" means today) but stated in the tool
+  description, so the two are not silently inconsistent.
 - **Previewing can insert payees.** `runRules` ends in
   `finalizeTransactionForRules`, which calls `insertPayee` for a `set payee_name`
   action naming a payee that does not exist. Nothing else is written and no

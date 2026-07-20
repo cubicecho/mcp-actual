@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createBudgetsRepo, mapCategories, mapCategoryGroups } from './budgets.ts';
+import { createBudgetsRepo, mapCategories, mapCategoryGroups, toBudgetCategory } from './budgets.ts';
 
 const updateCategoryGroup = vi.fn(async () => undefined);
 const getCategoryGroups = vi.fn(async () => [{ id: 'g-2', name: 'Retired', is_income: false, hidden: false }]);
@@ -77,5 +77,25 @@ describe('updateCategoryGroup', () => {
     await expect(repo.updateCategoryGroup('nope', { hidden: true })).rejects.toThrow(
       'No category group with id "nope"',
     );
+  });
+});
+
+describe('toBudgetCategory', () => {
+  it('reads budgeted/spent/balance for an ordinary category', () => {
+    const mapped = toBudgetCategory({ id: 'c-1', name: 'Groceries', budgeted: 40000, spent: -12500, balance: 27500 });
+    expect(mapped).toMatchObject({ isIncome: false, budgeted: 40000, spent: -12500, balance: 27500 });
+    expect(mapped?.received).toBeUndefined();
+  });
+
+  it('reads `received` for an income category, which has no spent at all', () => {
+    // Actual emits income categories with only `received` on an envelope
+    // budget; reading `spent` off one reports a real salary as 0.
+    const mapped = toBudgetCategory({ id: 'c-2', name: 'Salary', received: 500000 }, 'Income', true);
+    expect(mapped).toMatchObject({ isIncome: true, received: 500000 });
+    expect(mapped?.spent).toBe(0);
+  });
+
+  it('drops an entry with no id rather than inventing one', () => {
+    expect(toBudgetCategory({ name: 'Orphan' })).toBeNull();
   });
 });

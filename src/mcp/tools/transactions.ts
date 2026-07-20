@@ -96,7 +96,9 @@ export function transactionTools(repos: Pick<ActualRepos, 'transactions'>): Tool
       title: 'Get an account’s transactions',
       description:
         'List every transaction in one account between two dates, with no result cap. Use `search_transactions` ' +
-        'for anything cross-account or filtered; this is the exhaustive per-account read, e.g. for reconciling.',
+        'for anything cross-account or filtered; this is the exhaustive per-account read, e.g. for reconciling.\n' +
+        'Split transactions are returned as the parent followed by each of its legs (`isParent` / `isChild`), ' +
+        'so summing every row double-counts a split — total the legs, or the parents, not both.',
       inputSchema: {
         accountId: idSchema.describe('The account to read.'),
         startDate: dateSchema.describe('First date to include (inclusive).'),

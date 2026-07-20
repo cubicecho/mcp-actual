@@ -182,9 +182,17 @@ export interface BudgetCategory {
   id: string;
   name: string;
   groupName?: string;
+  /** Income categories track money coming in; `received` carries it, not `spent`. */
+  isIncome: boolean;
   budgeted: number;
   spent: number;
   balance: number;
+  /**
+   * Income only. Actual reports income as `received` and leaves `spent` unset,
+   * so on the default envelope budget an income category's budgeted/spent/
+   * balance are all genuinely 0 — this is the figure that means anything.
+   */
+  received?: number;
   /** When true, an unspent balance rolls into next month instead of returning to "to budget". */
   carryover: boolean;
 }

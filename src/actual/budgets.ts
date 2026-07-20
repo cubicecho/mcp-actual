@@ -38,13 +38,20 @@ export interface CategoryGroupInput {
  * `getBudgetMonth` types its category groups as loose records, so the fields we
  * read are narrowed here rather than trusted wholesale.
  */
-interface RawBudgetCategory {
+export interface RawBudgetCategory {
   id?: unknown;
   name?: unknown;
   budgeted?: unknown;
   spent?: unknown;
   balance?: unknown;
   carryover?: unknown;
+  /**
+   * Income categories report `received` instead of `spent`, and on the default
+   * envelope budget they carry *only* `received` — no budgeted, balance, or
+   * carryover at all. Reading `spent` off one yields 0, which is why income
+   * lines used to come back looking empty.
+   */
+  received?: unknown;
 }
 
 function num(value: unknown): number {
@@ -55,7 +62,7 @@ function str(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
-function toBudgetCategory(raw: RawBudgetCategory, groupName?: string): BudgetCategory | null {
+export function toBudgetCategory(raw: RawBudgetCategory, groupName?: string, isIncome = false): BudgetCategory | null {
   const id = str(raw.id);
   if (!id) {
     return null;
@@ -64,10 +71,14 @@ function toBudgetCategory(raw: RawBudgetCategory, groupName?: string): BudgetCat
     id,
     name: str(raw.name) ?? '(unnamed)',
     groupName,
+    isIncome,
     budgeted: num(raw.budgeted),
     spent: num(raw.spent),
     balance: num(raw.balance),
     carryover: Boolean(raw.carryover),
+    // Present only for income categories, where Actual reports money coming in
+    // as `received` and leaves `spent` undefined.
+    ...(isIncome ? { received: num(raw.received) } : {}),
   };
 }
 
@@ -146,8 +157,9 @@ export function createBudgetsRepo(client: ActualClient): BudgetsRepo {
     const summary = await api.getBudgetMonth(month);
     for (const group of summary.categoryGroups) {
       const groupName = str(group.name);
+      const isIncome = Boolean((group as { is_income?: unknown }).is_income);
       for (const category of group.categories ?? []) {
-        const mapped = toBudgetCategory(category as RawBudgetCategory, groupName);
+        const mapped = toBudgetCategory(category as RawBudgetCategory, groupName, isIncome);
         if (mapped?.id === categoryId) {
           return mapped;
         }
@@ -165,8 +177,9 @@ export function createBudgetsRepo(client: ActualClient): BudgetsRepo {
         const categories: BudgetCategory[] = [];
         for (const group of summary.categoryGroups) {
           const groupName = str(group.name);
+          const isIncome = Boolean((group as { is_income?: unknown }).is_income);
           for (const category of group.categories ?? []) {
-            const mapped = toBudgetCategory(category as RawBudgetCategory, groupName);
+            const mapped = toBudgetCategory(category as RawBudgetCategory, groupName, isIncome);
             if (mapped) {
               categories.push(mapped);
             }

@@ -10,8 +10,16 @@ export interface AccountsRepo {
 export function createAccountsRepo(client: ActualClient): AccountsRepo {
   return {
     /**
-     * Every account with its current balance. Syncs first so the numbers
-     * reflect what other Actual clients have written since the last read.
+     * Every account with its balance **as of today**. Syncs first so the
+     * numbers reflect what other Actual clients have written since the last
+     * read.
+     *
+     * `api/account-balance` defaults its `cutoff` to `new Date()` and filters
+     * `date <= cutoff`, so a future-dated transaction — a posted schedule, a
+     * payment dated forward — is excluded here while Actual's own account
+     * screen, which sums without a date bound, includes it. That difference is
+     * deliberate ("current" means today) but it is a real discrepancy, so the
+     * tool says so rather than letting the two silently disagree.
      */
     listWithBalances: () =>
       client.read(async () => {

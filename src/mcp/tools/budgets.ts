@@ -32,7 +32,10 @@ export function budgetTools(repos: Pick<ActualRepos, 'budgets'>): ToolDefinition
       description:
         'Read one month’s budget: totals (income, budgeted, spent, balance, and `toBudget` — what is still ' +
         'unassigned) plus every category with its budgeted, spent, and balance amounts and its carryover flag. ' +
-        'All amounts are integer cents; spending is negative. This is the tool for "am I over budget?".',
+        'All amounts are integer cents; spending is negative. This is the tool for "am I over budget?".\n' +
+        'Income categories (`isIncome: true`) are different: Actual tracks money coming in as `received`, and ' +
+        'leaves their budgeted/spent/balance at 0 on a standard envelope budget. Read `received` for those, and ' +
+        'never report an income category as "0 spent" — the figure simply lives elsewhere.',
       inputSchema: {
         month: monthSchema.describe('The month to read, as YYYY-MM.'),
       },
