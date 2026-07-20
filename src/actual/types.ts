@@ -135,6 +135,14 @@ export interface RulePreviewEntry {
   payeeName?: string;
   amount: number;
   amountDecimal: number;
+  /**
+   * Always false in practice: AQL's default `inline` split mode filters parents
+   * out, so a preview only ever sees the legs. Carried so the distinction is
+   * explicit rather than assumed.
+   */
+  isParent: boolean;
+  /** True for one leg of a split. The parent is not listed alongside it. */
+  isChild: boolean;
   /** Keyed by field name; only fields the rules actually change appear. */
   changes: Record<string, RuleFieldChange>;
 }
@@ -149,6 +157,12 @@ export interface RulePreview {
   scanned: number;
   /** True when more transactions matched the filter than `limit` allowed. */
   truncated: boolean;
+  /**
+   * Ids of rules whose `set payee_name` action can make even a preview insert a
+   * payee, because Actual's engine creates unknown payees as it finalizes. Empty
+   * for the usual case; non-empty means previewing has a side effect.
+   */
+  createsPayees: string[];
 }
 
 export interface BudgetMonthSummary {

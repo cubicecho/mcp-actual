@@ -77,6 +77,35 @@ The second half of the objection still stands, and shapes both tools:
 The handler returns `null` when it cannot parse an action; that is surfaced as a
 tool error, because a silent no-op reads as success.
 
+Behaviours of the library that shape these tools, each verified in the bundled
+source rather than inferred from its types:
+
+- **Ids are interpolated into SQL unescaped.** AQL's `$oneof` emits
+  ``ids.map((id) => `'${String(id)}'`)`` and `val()` escapes quotes only for
+  `string`-typed fields, never `id`-typed ones. An id containing a quote breaks
+  out of the `IN (...)` list, so `x') OR 1=1 --` turns a targeted lookup into a
+  whole-table match that `apply_rule_actions` would then write to. `idSchema`
+  constrains every id at the tool boundary, and `applyActions` additionally
+  refuses to proceed when the lookup returns rows it did not ask for.
+- **Split parents are unreachable.** AQL defaults to `splits: 'inline'`, whose
+  executor appends `AND is_parent = 0`. Parents never appear in any query here,
+  so a split is addressable only leg by leg, and `isParent` is always false.
+- **"Uncategorized" is not just a null category.** Actual's own
+  `conditionSpecialCases` expands `category is null` to *and not a transfer, and
+  not a split parent*, because both legs of a transfer carry a null category.
+  `buildSearchFilter` mirrors that, or cleanup would invite an agent to
+  categorize transfers.
+- **`batchUpdateTransactions` reports transfer bookkeeping, not writes.** Its
+  `updated` field is `transfersUpdated` when `runTransfers` is on (the default),
+  which is empty for an ordinary categorization. `applyActions` therefore
+  confirms by reading the rows back instead of echoing that field.
+- **Previewing can insert payees.** `runRules` ends in
+  `finalizeTransactionForRules`, which calls `insertPayee` for a `set payee_name`
+  action naming a payee that does not exist. Nothing else is written and no
+  transaction is touched, but this means `preview_rule_effects` is not perfectly
+  side-effect-free; it reports the rules capable of it in `createsPayees` rather
+  than hiding it.
+
 Each previewed change carries **both** the display name and the raw id
 (`from`/`to` plus `fromId`/`toId`). Names alone were unusable — actions take ids
 as values, so a name-only diff forced an ambiguous `resolve_name_to_id`

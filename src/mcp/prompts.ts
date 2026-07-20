@@ -119,8 +119,8 @@ const backfillRule = definePrompt({
         '   preview, and each action `value` taken from the change’s `toId`. Never pass an id you did not see',
         '   in the preview output, and never assemble the id list yourself — that tool does NOT re-check rule',
         '   conditions, so a wrong id is silently rewritten rather than skipped.',
-        '6. Report the `updated` count and anything under `missing` or `errors`. If `missing` is non-empty, do',
-        '   not retry — tell me first.',
+        '6. Report what came back: `applied`, plus anything under `missing`, `deleted`, or `errors`. A',
+        '   non-empty `missing` means the ids were wrong — do not retry with the same list, tell me first.',
         '',
         'Never call `apply_rule_actions` before showing me a preview in the same conversation. If you are',
         'unsure whether a change is intended, ask.',
@@ -167,8 +167,9 @@ const cleanupPayees = definePrompt({
       '3. Treat the clustering as a suggestion, not a verdict. Similar names are not always the same',
       '   merchant ("Shell" the fuel station vs "Shell Energy"). Call out anything you are unsure about',
       '   instead of folding it in quietly.',
-      '4. NEVER merge a payee that has a `transferAccountId`. Those represent the other side of an account',
-      '   transfer, and merging one corrupts the transfers that reference it. Exclude them and say you did.',
+      '4. Exclude any payee with a `transferAccountId` — those are the other side of an account transfer, not',
+      '   a merchant. Merging one is refused outright, so treat one appearing in a cluster as a sign the',
+      '   cluster is wrong, and say so rather than working around it.',
     ];
 
     if (enableWrites) {
@@ -215,14 +216,17 @@ const categorizeTransactions = definePrompt({
       '   before — check with `search_transactions` filtered to that payee — not on what the name suggests.',
       '4. Where you cannot tell, say so and ask. A wrong category is worse than an unanswered question,',
       '   because it silently distorts the budget.',
+      '5. Split transactions appear as their individual legs, never as the parent, so categorize a split leg',
+      '   by leg. Transfers between my own accounts are excluded — they are not spending and must not be',
+      '   given a category.',
     ];
 
     if (enableWrites) {
       lines.push(
-        '5. After I approve a group, apply it with `update_transaction` per transaction, or with',
+        '6. After I approve a group, apply it with `update_transaction` per transaction, or with',
         '   `apply_rule_actions` passing the ids you just showed me and a single',
         '   `{ op: "set", field: "category", value: "<category id>" }` action.',
-        '6. For any payee that will recur, offer a `create_rule` so the next import categorizes itself, and',
+        '7. For any payee that will recur, offer a `create_rule` so the next import categorizes itself, and',
         '   use the `backfill_rule` workflow if I want it applied to older transactions too.',
       );
     } else {

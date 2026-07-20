@@ -24,8 +24,13 @@ describe('buildSearchFilter', () => {
     });
   });
 
-  it('treats uncategorized as a null category', () => {
-    expect(buildSearchFilter({ limit: 10, uncategorized: true })).toEqual({ $and: [{ category: null }] });
+  it('excludes transfers from uncategorized, as Actual itself does', () => {
+    // Both legs of an account transfer carry a null category legitimately.
+    // Offering them as cleanup targets invites an agent to categorize them,
+    // which is what Actual's own `category is null` special case prevents.
+    expect(buildSearchFilter({ limit: 10, uncategorized: true })).toEqual({
+      $and: [{ category: null }, { 'payee.transfer_acct': null }],
+    });
   });
 
   it('keeps a zero amount bound rather than dropping it as falsy', () => {

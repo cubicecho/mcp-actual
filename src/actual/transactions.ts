@@ -25,6 +25,8 @@ export interface TransactionSearch {
   /** True to return only transactions with no category — the usual cleanup target. */
   uncategorized?: boolean;
   limit: number;
+  /** How many matching rows to skip, for paging past `limit`. Defaults to 0. */
+  offset?: number;
 }
 
 export interface TransactionsRepo {
@@ -143,7 +145,13 @@ export function buildSearchFilter(filters: TransactionSearch): Record<string, un
     conditions.push({ category: filters.categoryId });
   }
   if (filters.uncategorized) {
-    conditions.push({ category: null });
+    // Actual treats "category is null" as *and not a transfer, and not a split
+    // parent* — see `conditionSpecialCases` in the rule engine. Both legs of
+    // every account transfer legitimately carry a null category, so the bare
+    // filter would offer them up as cleanup targets and an agent would
+    // categorize them, which is exactly what that special case prevents. Split
+    // parents are already excluded by the query's `inline` split mode.
+    conditions.push({ category: null }, { 'payee.transfer_acct': null });
   }
   if (filters.notesContains) {
     conditions.push({ notes: { $like: `%${filters.notesContains}%` } });
@@ -174,15 +182,16 @@ export function createTransactionsRepo(client: ActualClient): TransactionsRepo {
      * date range — so this goes through AQL instead.
      */
     search: (filters) =>
-      client.run(async () => {
+      client.read(async () => {
         // Fetch one extra row: if it comes back, more matched than we returned.
         const probe = filters.limit + 1;
-        const query = api
+        const base = api
           .q('transactions')
           .filter(buildSearchFilter(filters))
           .select(SELECT_FIELDS)
           .orderBy([{ date: 'desc' }, { amount: 'desc' }])
           .limit(probe);
+        const query = filters.offset ? base.offset(filters.offset) : base;
         const { data } = (await api.aqlQuery(query)) as { data: TransactionRow[] };
         const truncated = data.length > filters.limit;
         const rows = truncated ? data.slice(0, filters.limit) : data;
@@ -217,7 +226,7 @@ export function createTransactionsRepo(client: ActualClient): TransactionsRepo {
      * on write, and reporting the requested value would be a lie.
      */
     update: (id, fields) =>
-      client.run(async () => {
+      client.read(async () => {
         const patch: Record<string, unknown> = {};
         if (fields.categoryId !== undefined) {
           patch.category = fields.categoryId;

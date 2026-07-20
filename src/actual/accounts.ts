@@ -14,8 +14,7 @@ export function createAccountsRepo(client: ActualClient): AccountsRepo {
      * reflect what other Actual clients have written since the last read.
      */
     listWithBalances: () =>
-      client.run(async () => {
-        await api.sync();
+      client.read(async () => {
         const raw = await api.getAccounts();
         const accounts: AccountBalance[] = [];
         for (const account of raw) {

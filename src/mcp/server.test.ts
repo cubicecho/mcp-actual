@@ -118,11 +118,14 @@ describe('createActualServer', () => {
             payeeName: 'AMZN Mktp US*2H4',
             amount: -2500,
             amountDecimal: -25,
+            isParent: false,
+            isChild: false,
             changes: { category: { from: null, to: 'Shopping' } },
           },
         ],
         scanned: 40,
         truncated: false,
+        createsPayees: [],
       };
       const client = await connect(
         stubRepos({
@@ -158,7 +161,7 @@ describe('createActualServer', () => {
           rules: {
             applyActions: async (transactionIds, actions) => {
               seen = { transactionIds, actions };
-              return { updated: ['t-1'], missing: ['t-9'], errors: [] };
+              return { applied: ['t-1'], missing: ['t-9'], deleted: [], errors: [] };
             },
           },
         }),
@@ -171,11 +174,32 @@ describe('createActualServer', () => {
         },
       });
       expect(result.isError).toBeFalsy();
-      expect(JSON.parse(textOf(result))).toEqual({ updated: ['t-1'], missing: ['t-9'], errors: [] });
+      expect(JSON.parse(textOf(result))).toEqual({
+        applied: ['t-1'],
+        missing: ['t-9'],
+        deleted: [],
+        errors: [],
+      });
       expect(seen).toEqual({
         transactionIds: ['t-1', 't-9'],
         actions: [{ op: 'set', field: 'category', value: 'c-1' }],
       });
+    });
+
+    it('refuses an id that could widen the query beyond the ids given', async () => {
+      // AQL interpolates id values into SQL unescaped, so `x') OR 1=1 --` would
+      // turn this bulk write into one matching every transaction in the budget.
+      const client = await connect(
+        stubRepos({ rules: { applyActions: async () => ({ applied: [], missing: [], deleted: [], errors: [] }) } }),
+      );
+      const result = await client.callTool({
+        name: 'apply_rule_actions',
+        arguments: {
+          transactionIds: ["x') OR 1=1 --"],
+          actions: [{ op: 'set', field: 'category', value: 'c-1' }],
+        },
+      });
+      expect(result.isError).toBe(true);
     });
 
     it('refuses a bulk apply larger than the cap', async () => {
@@ -197,6 +221,57 @@ describe('createActualServer', () => {
         arguments: { transactionIds: ['t-1'], actions: [{ op: 'drop-table', value: 'x' }] },
       });
       expect(result.isError).toBe(true);
+    });
+
+    it('accepts delete-transaction, the op Actual actually defines, and rejects bare delete', async () => {
+      // Actual's Action constructor asserts membership of ACTION_OPS, so `delete`
+      // throws from inside the library — it must not reach it.
+      let seen: unknown;
+      const client = await connect(
+        stubRepos({
+          rules: {
+            applyActions: async (_ids, actions) => {
+              seen = actions;
+              return { applied: ['t-1'], missing: [], deleted: [], errors: [] };
+            },
+          },
+        }),
+      );
+      const ok = await client.callTool({
+        name: 'apply_rule_actions',
+        arguments: { transactionIds: ['t-1'], actions: [{ op: 'delete-transaction', value: '' }] },
+      });
+      expect(ok.isError).toBeFalsy();
+      expect(seen).toEqual([{ op: 'delete-transaction', value: '' }]);
+
+      const bad = await client.callTool({
+        name: 'apply_rule_actions',
+        arguments: { transactionIds: ['t-1'], actions: [{ op: 'delete', value: '' }] },
+      });
+      expect(bad.isError).toBe(true);
+    });
+
+    it('documents delete-transaction rather than delete in the rule schema', async () => {
+      const client = await connect(stubRepos());
+      const doc = JSON.parse(textOf(await client.callTool({ name: 'describe_rule_schema', arguments: {} })));
+      expect(Object.keys(doc.actionOps)).toContain('delete-transaction');
+      expect(Object.keys(doc.actionOps)).not.toContain('delete');
+    });
+
+    it('passes paging through to the preview', async () => {
+      let seen: unknown;
+      const client = await connect(
+        stubRepos({
+          rules: {
+            previewEffects: async (filters) => {
+              seen = filters;
+              return { entries: [], scanned: 0, truncated: false, createsPayees: [] };
+            },
+          },
+        }),
+      );
+      await client.callTool({ name: 'preview_rule_effects', arguments: { limit: 50, offset: 100 } });
+      expect(seen).toMatchObject({ limit: 50, offset: 100 });
     });
   });
 

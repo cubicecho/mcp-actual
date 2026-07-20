@@ -157,10 +157,10 @@ export function createBudgetsRepo(client: ActualClient): BudgetsRepo {
   };
 
   return {
-    listMonths: () => client.run(() => api.getBudgetMonths()),
+    listMonths: () => client.read(() => api.getBudgetMonths()),
 
     getMonth: (month) =>
-      client.run(async () => {
+      client.read(async () => {
         const summary = await api.getBudgetMonth(month);
         const categories: BudgetCategory[] = [];
         for (const group of summary.categoryGroups) {
@@ -201,7 +201,7 @@ export function createBudgetsRepo(client: ActualClient): BudgetsRepo {
 
     resetHold: (month) => client.run(() => api.resetBudgetHold(month)),
 
-    listCategories: (options) => client.run(() => readCategories(options?.includeHidden ?? false)),
+    listCategories: (options) => client.read(() => readCategories(options?.includeHidden ?? false)),
 
     createCategory: (input) =>
       client.run(async () => {
@@ -232,7 +232,7 @@ export function createBudgetsRepo(client: ActualClient): BudgetsRepo {
         return (await readCategories(true)).find((category) => category.id === id) ?? null;
       }),
 
-    listCategoryGroups: (options) => client.run(() => readCategoryGroups(options?.includeHidden ?? false)),
+    listCategoryGroups: (options) => client.read(() => readCategoryGroups(options?.includeHidden ?? false)),
 
     createCategoryGroup: (input) =>
       client.run(async () => {

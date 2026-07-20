@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ActualRepos } from '../../actual/index.ts';
 import { defineTool, type ToolDefinition } from '../tool.ts';
+import { idSchema } from './ids.ts';
 
 export function payeeTools(repos: Pick<ActualRepos, 'payees'>): ToolDefinition[] {
   return [
@@ -73,13 +74,13 @@ export function payeeTools(repos: Pick<ActualRepos, 'payees'>): ToolDefinition[]
         'category-learning flags are not reachable. Renaming does not merge: to combine two payees, use ' +
         '`merge_payees`.',
       inputSchema: {
-        id: z.string().min(1).describe('Id of the payee to rename.'),
+        id: idSchema.describe('Id of the payee to rename.'),
         name: z.string().min(1).describe('The new name.'),
       },
       write: true,
       idempotent: true,
       run: async (args) => {
-        const { id, name } = z.object({ id: z.string().min(1), name: z.string().min(1) }).parse(args);
+        const { id, name } = z.object({ id: idSchema, name: z.string().min(1) }).parse(args);
         return { payee: await repos.payees.update(id, { name }) };
       },
     }),
@@ -93,17 +94,15 @@ export function payeeTools(repos: Pick<ActualRepos, 'payees'>): ToolDefinition[]
         'calling, and never merge a payee that has a `transferAccountId`, which would corrupt transfers. Takes ' +
         'ids, not names, so a near-miss on a name cannot silently merge the wrong thing.',
       inputSchema: {
-        targetId: z.string().min(1).describe('Id of the payee to keep; everything merges into this one.'),
+        targetId: idSchema.describe('Id of the payee to keep; everything merges into this one.'),
         mergeIds: z
-          .array(z.string().min(1))
+          .array(idSchema)
           .min(1)
           .describe('Ids of the payees to merge into the target. They will no longer exist afterwards.'),
       },
       write: true,
       run: async (args) => {
-        const { targetId, mergeIds } = z
-          .object({ targetId: z.string().min(1), mergeIds: z.array(z.string().min(1)).min(1) })
-          .parse(args);
+        const { targetId, mergeIds } = z.object({ targetId: idSchema, mergeIds: z.array(idSchema).min(1) }).parse(args);
         if (mergeIds.includes(targetId)) {
           throw new Error('targetId must not also appear in mergeIds — a payee cannot be merged into itself');
         }

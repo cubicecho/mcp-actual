@@ -155,13 +155,13 @@ export function createPayeesRepo(client: ActualClient): PayeesRepo {
 
   return {
     list: (options) =>
-      client.run(async () => {
+      client.read(async () => {
         const payees = (await api.getPayees()).map(toPayee);
         return options?.withUsage ? withUsage(payees) : payees;
       }),
 
     findDuplicates: (options) =>
-      client.run(async () => {
+      client.read(async () => {
         // Always resolve usage here: the counts decide the merge target.
         const payees = await withUsage((await api.getPayees()).map(toPayee));
         return groupDuplicates(payees, options?.minGroupSize ?? 2);
@@ -173,7 +173,25 @@ export function createPayeesRepo(client: ActualClient): PayeesRepo {
      * layer requires explicit ids rather than accepting names.
      */
     merge: (targetId, mergeIds) =>
-      client.run(async () => {
+      client.read(async () => {
+        // A transfer payee is the other side of an account transfer, not a
+        // merchant. Merging one silently corrupts every transfer referencing it
+        // and there is no undo, so refuse rather than trusting the caller to
+        // have checked. This is the one guard the tool layer cannot delegate.
+        const payees = (await api.getPayees()).map(toPayee);
+        const byId = new Map(payees.map((payee) => [payee.id, payee]));
+        const transfers = [targetId, ...mergeIds].filter((id) => byId.get(id)?.transferAccountId);
+        if (transfers.length > 0) {
+          const names = transfers.map((id) => `"${byId.get(id)?.name ?? id}"`).join(', ');
+          throw new Error(
+            `Refusing to merge transfer ${transfers.length === 1 ? 'payee' : 'payees'} ${names}. These represent ` +
+              'the other side of an account transfer, and merging one corrupts the transfers that reference it.',
+          );
+        }
+        const unknown = [targetId, ...mergeIds].filter((id) => !byId.has(id));
+        if (unknown.length > 0) {
+          throw new Error(`No payee with id ${unknown.map((id) => `"${id}"`).join(', ')}`);
+        }
         await api.mergePayees(targetId, mergeIds);
         return findById(targetId);
       }),

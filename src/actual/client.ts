@@ -64,6 +64,23 @@ export class ActualClient {
   }
 
   /**
+   * Run `fn` with the budget open **and freshly synced**, serialized like
+   * {@link run}. Every tool that reports budget data should use this: other
+   * Actual clients write to the same budget, and a tool that reports a stale
+   * balance is worse than one that is slightly slower.
+   *
+   * A sync failure propagates rather than falling back to the cached copy —
+   * silently answering from stale data is the failure mode this exists to
+   * prevent.
+   */
+  read<T>(fn: () => Promise<T>): Promise<T> {
+    return this.run(async () => {
+      await api.sync();
+      return fn();
+    });
+  }
+
+  /**
    * The typed handler channel (see {@link ActualSend}). Only valid once the
    * budget is open, so call it **inside** {@link run} — it does not serialize
    * on its own, and reading it before the budget opens throws.

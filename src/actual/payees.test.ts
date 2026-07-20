@@ -1,6 +1,14 @@
-import { describe, expect, it } from 'vitest';
-import { groupDuplicates, normalizePayeeName, tallyUsage } from './payees.ts';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createPayeesRepo, groupDuplicates, normalizePayeeName, tallyUsage } from './payees.ts';
 import type { Payee } from './types.ts';
+
+const getPayees = vi.fn();
+const mergePayees = vi.fn();
+
+vi.mock('@actual-app/api', () => ({
+  getPayees: () => getPayees(),
+  mergePayees: (...args: unknown[]) => mergePayees(...args),
+}));
 
 function payee(id: string, name: string, transactionCount = 0, transferAccountId?: string): Payee {
   return { id, name, transactionCount, ...(transferAccountId ? { transferAccountId } : {}) };
@@ -74,5 +82,43 @@ describe('tallyUsage', () => {
 
   it('skips rows with no payee', () => {
     expect(tallyUsage([{ payee: null, date: '2026-07-01' }]).size).toBe(0);
+  });
+});
+
+describe('merge guards', () => {
+  const PAYEES = [
+    { id: 'p-1', name: 'Amazon' },
+    { id: 'p-2', name: 'AMZN Mktp US*2H4' },
+    { id: 'p-3', name: 'Transfer: Savings', transfer_acct: 'a-9' },
+  ];
+  const repo = createPayeesRepo({
+    read: (fn: () => Promise<unknown>) => fn(),
+    run: (fn: () => Promise<unknown>) => fn(),
+  } as Parameters<typeof createPayeesRepo>[0]);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getPayees.mockResolvedValue(PAYEES);
+    mergePayees.mockResolvedValue(undefined);
+  });
+
+  it('merges ordinary payees', async () => {
+    await repo.merge('p-1', ['p-2']);
+    expect(mergePayees).toHaveBeenCalledWith('p-1', ['p-2']);
+  });
+
+  it('refuses to merge a transfer payee, which would corrupt its transfers', async () => {
+    await expect(repo.merge('p-1', ['p-3'])).rejects.toThrow(/Refusing to merge transfer payee "Transfer: Savings"/);
+    expect(mergePayees).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the merge target itself is a transfer payee', async () => {
+    await expect(repo.merge('p-3', ['p-1'])).rejects.toThrow(/Refusing to merge transfer payee/);
+    expect(mergePayees).not.toHaveBeenCalled();
+  });
+
+  it('refuses an id that does not exist rather than silently merging the rest', async () => {
+    await expect(repo.merge('p-1', ['p-nope'])).rejects.toThrow(/No payee with id "p-nope"/);
+    expect(mergePayees).not.toHaveBeenCalled();
   });
 });

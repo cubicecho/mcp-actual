@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ActualRepos } from '../../actual/index.ts';
 import { defineTool, type ToolDefinition } from '../tool.ts';
+import { idSchema } from './ids.ts';
 
 /** Budget months are `YYYY-MM` — a day component is not accepted. */
 const monthSchema = z
@@ -50,14 +51,14 @@ export function budgetTools(repos: Pick<ActualRepos, 'budgets'>): ToolDefinition
         'the effect is visible immediately.',
       inputSchema: {
         month: monthSchema.describe('Month to budget in, as YYYY-MM.'),
-        categoryId: z.string().min(1).describe('Category id, from list_categories.'),
+        categoryId: idSchema.describe('Category id, from list_categories.'),
         amount: centsSchema.describe('Amount to budget, in cents. Replaces the current amount.'),
       },
       write: true,
       idempotent: true,
       run: async (args) => {
         const { month, categoryId, amount } = z
-          .object({ month: monthSchema, categoryId: z.string().min(1), amount: centsSchema })
+          .object({ month: monthSchema, categoryId: idSchema, amount: centsSchema })
           .parse(args);
         return { category: await repos.budgets.setAmount(month, categoryId, amount) };
       },
@@ -71,14 +72,14 @@ export function budgetTools(repos: Pick<ActualRepos, 'budgets'>): ToolDefinition
         'into the next month instead of returning to "to budget"; an overspend carries forward as a negative.',
       inputSchema: {
         month: monthSchema.describe('Month to change, as YYYY-MM.'),
-        categoryId: z.string().min(1).describe('Category id, from list_categories.'),
+        categoryId: idSchema.describe('Category id, from list_categories.'),
         carryover: z.boolean().describe('True to roll the balance forward, false to stop rolling it forward.'),
       },
       write: true,
       idempotent: true,
       run: async (args) => {
         const { month, categoryId, carryover } = z
-          .object({ month: monthSchema, categoryId: z.string().min(1), carryover: z.boolean() })
+          .object({ month: monthSchema, categoryId: idSchema, carryover: z.boolean() })
           .parse(args);
         return { category: await repos.budgets.setCarryover(month, categoryId, carryover) };
       },
@@ -163,7 +164,7 @@ export function budgetTools(repos: Pick<ActualRepos, 'budgets'>): ToolDefinition
         'every category in it, so `list_categories` will report those categories as hidden — unhide the group ' +
         'here rather than trying to unhide them one by one.',
       inputSchema: {
-        id: z.string().min(1).describe('Id of the group to change, from list_category_groups.'),
+        id: idSchema.describe('Id of the group to change, from list_category_groups.'),
         name: z.string().min(1).optional().describe('New name.'),
         hidden: z.boolean().optional().describe('Hide or unhide the group and everything in it.'),
       },
@@ -172,7 +173,7 @@ export function budgetTools(repos: Pick<ActualRepos, 'budgets'>): ToolDefinition
       run: async (args) => {
         const { id, ...fields } = z
           .object({
-            id: z.string().min(1),
+            id: idSchema,
             name: z.string().min(1).optional(),
             hidden: z.boolean().optional(),
           })
@@ -190,7 +191,7 @@ export function budgetTools(repos: Pick<ActualRepos, 'budgets'>): ToolDefinition
         'behave differently from spending ones — set `isIncome` only for money coming in.',
       inputSchema: {
         name: z.string().min(1).describe('Name for the new category.'),
-        groupId: z.string().min(1).describe('Id of the category group to create it in.'),
+        groupId: idSchema.describe('Id of the category group to create it in.'),
         isIncome: z.boolean().optional().describe('True for an income category. Defaults to false.'),
         hidden: z.boolean().optional().describe('Create it hidden. Defaults to false.'),
       },
@@ -199,7 +200,7 @@ export function budgetTools(repos: Pick<ActualRepos, 'budgets'>): ToolDefinition
         const input = z
           .object({
             name: z.string().min(1),
-            groupId: z.string().min(1),
+            groupId: idSchema,
             isIncome: z.boolean().optional(),
             hidden: z.boolean().optional(),
           })
@@ -215,9 +216,9 @@ export function budgetTools(repos: Pick<ActualRepos, 'budgets'>): ToolDefinition
         'Rename a category, move it to another group, or hide/unhide it. Only the fields you pass are changed. ' +
         'Hiding keeps history intact and is the safe alternative to deleting a category you no longer use.',
       inputSchema: {
-        id: z.string().min(1).describe('Id of the category to change.'),
+        id: idSchema.describe('Id of the category to change.'),
         name: z.string().min(1).optional().describe('New name.'),
-        groupId: z.string().min(1).optional().describe('Move the category into this group.'),
+        groupId: idSchema.optional().describe('Move the category into this group.'),
         hidden: z.boolean().optional().describe('Hide or unhide the category.'),
       },
       write: true,
@@ -225,9 +226,9 @@ export function budgetTools(repos: Pick<ActualRepos, 'budgets'>): ToolDefinition
       run: async (args) => {
         const { id, ...fields } = z
           .object({
-            id: z.string().min(1),
+            id: idSchema,
             name: z.string().min(1).optional(),
-            groupId: z.string().min(1).optional(),
+            groupId: idSchema.optional(),
             hidden: z.boolean().optional(),
           })
           .parse(args);

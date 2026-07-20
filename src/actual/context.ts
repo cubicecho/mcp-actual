@@ -52,7 +52,7 @@ export function createContextRepo(client: ActualClient): ContextRepo {
      * ordinary answer for an agent probing before it creates one.
      */
     resolveNameToId: (type, name) =>
-      client.run(async () => {
+      client.read(async () => {
         try {
           const id = await api.getIDByName(type, name);
           return id ?? null;
@@ -62,13 +62,13 @@ export function createContextRepo(client: ActualClient): ContextRepo {
       }),
 
     listSchedules: () =>
-      client.run(async () => {
+      client.read(async () => {
         const raw = (await api.getSchedules()) as RawSchedule[];
         return raw.map(toSchedule);
       }),
 
     listTags: () =>
-      client.run(async () => {
+      client.read(async () => {
         const raw = await api.getTags();
         return raw.map(
           (tag): Tag => ({
@@ -81,7 +81,7 @@ export function createContextRepo(client: ActualClient): ContextRepo {
       }),
 
     getNote: (id) =>
-      client.run(async () => {
+      client.read(async () => {
         const note = await api.getNote(id);
         return note?.note ?? null;
       }),
