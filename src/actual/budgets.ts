@@ -1,6 +1,6 @@
 import * as api from '@actual-app/api';
 import type { ActualClient } from './client.ts';
-import type { BudgetCategory, BudgetMonthSummary, Category } from './types.ts';
+import type { BudgetCategory, BudgetMonthSummary, Category, CategoryGroup } from './types.ts';
 
 export interface BudgetsRepo {
   listMonths(): Promise<string[]>;
@@ -12,12 +12,25 @@ export interface BudgetsRepo {
   listCategories(options?: { includeHidden?: boolean }): Promise<Category[]>;
   createCategory(input: CategoryInput): Promise<Category | null>;
   updateCategory(id: string, fields: Partial<CategoryInput>): Promise<Category | null>;
+  listCategoryGroups(options?: { includeHidden?: boolean }): Promise<CategoryGroup[]>;
+  createCategoryGroup(input: CategoryGroupInput): Promise<CategoryGroup | null>;
+  updateCategoryGroup(id: string, fields: Partial<CategoryGroupInput>): Promise<CategoryGroup | null>;
 }
 
 export interface CategoryInput {
   name: string;
   groupId: string;
   isIncome?: boolean;
+  hidden?: boolean;
+}
+
+/**
+ * `is_income` is deliberately absent: Actual's `api/category-group-create`
+ * forwards only `name` and `hidden`, so an income flag passed here would be
+ * silently dropped. Every budget already has the one income group it needs.
+ */
+export interface CategoryGroupInput {
+  name: string;
   hidden?: boolean;
 }
 
@@ -66,11 +79,26 @@ type RawCategory = Awaited<ReturnType<typeof api.getCategories>>[number] & {
   hidden?: unknown;
 };
 
-/** A group as `getCategoryGroups` returns it — only the fields the mapping reads. */
+/** A group as `getCategoryGroups` returns it — only the fields the mappings read. */
 interface RawCategoryGroup {
   id: string;
   name: string;
+  is_income?: boolean;
   hidden?: boolean;
+  categories?: unknown[];
+}
+
+/** Shape the group list, applying the same local hidden rule as {@link mapCategories}. */
+export function mapCategoryGroups(groups: RawCategoryGroup[], includeHidden: boolean): CategoryGroup[] {
+  return groups
+    .map((group) => ({
+      id: group.id,
+      name: group.name,
+      isIncome: Boolean(group.is_income),
+      hidden: Boolean(group.hidden),
+      categoryCount: group.categories?.length ?? 0,
+    }))
+    .filter((group) => includeHidden || !group.hidden);
 }
 
 /**
@@ -109,6 +137,9 @@ export function createBudgetsRepo(client: ActualClient): BudgetsRepo {
       (await api.getCategories()) as RawCategory[],
       includeHidden,
     );
+
+  const readCategoryGroups = async (includeHidden: boolean): Promise<CategoryGroup[]> =>
+    mapCategoryGroups((await api.getCategoryGroups()) as RawCategoryGroup[], includeHidden);
 
   /** Read one category's post-change budget state, so a write reports what actually landed. */
   const readBudgetCategory = async (month: string, categoryId: string): Promise<BudgetCategory | null> => {
@@ -199,6 +230,35 @@ export function createBudgetsRepo(client: ActualClient): BudgetsRepo {
         }
         await api.updateCategory(id, patch);
         return (await readCategories(true)).find((category) => category.id === id) ?? null;
+      }),
+
+    listCategoryGroups: (options) => client.run(() => readCategoryGroups(options?.includeHidden ?? false)),
+
+    createCategoryGroup: (input) =>
+      client.run(async () => {
+        const id = await api.createCategoryGroup({
+          name: input.name,
+          hidden: input.hidden,
+        } as Parameters<typeof api.createCategoryGroup>[0]);
+        // Read back with hidden included, or a group created hidden looks missing.
+        return (await readCategoryGroups(true)).find((group) => group.id === id) ?? null;
+      }),
+
+    updateCategoryGroup: (id, fields) =>
+      client.run(async () => {
+        const current = (await readCategoryGroups(true)).find((group) => group.id === id);
+        if (!current) {
+          throw new Error(`No category group with id "${id}"`);
+        }
+        // Actual's duplicate-name check reads `group.name.toUpperCase()`
+        // unconditionally, so a patch without a name throws a TypeError from
+        // deep inside the library. Always resend the current name.
+        const patch: Record<string, unknown> = { name: fields.name ?? current.name };
+        if (fields.hidden !== undefined) {
+          patch.hidden = fields.hidden;
+        }
+        await api.updateCategoryGroup(id, patch);
+        return (await readCategoryGroups(true)).find((group) => group.id === id) ?? null;
       }),
   };
 }

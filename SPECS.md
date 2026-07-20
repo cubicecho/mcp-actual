@@ -91,15 +91,29 @@ alone cannot answer a cross-account question, which is exactly the shape of
 | `list_budget_months` | `getBudgetMonths` | R |
 | `get_budget_month` | `getBudgetMonth` | R |
 | `list_categories` | `getCategories`, `getCategoryGroups` | R |
+| `list_category_groups` | `getCategoryGroups` | R |
 | `set_budget_amount` | `setBudgetAmount` | W |
 | `set_budget_carryover` | `setBudgetCarryover` | W |
 | `hold_for_next_month` | `holdBudgetForNextMonth` | W |
 | `reset_budget_hold` | `resetBudgetHold` | W |
 | `create_category` | `createCategory` | W |
 | `update_category` | `updateCategory` | W |
+| `create_category_group` | `createCategoryGroup` | W |
+| `update_category_group` | `updateCategoryGroup` | W |
 
 Categories are not optional: budgeting and rules both address categories by id,
 so the agent needs to enumerate them.
+
+Groups get their own listing because `list_categories` reaches a group only
+through a category that already lives in it — an empty group, including one just
+created, is otherwise unaddressable and `create_category` has no id to take.
+
+Two limits come from `@actual-app/api` (26.7.0) rather than from us:
+`api/category-group-create` forwards only `name` and `hidden`, so an income
+group cannot be created and `create_category_group` does not offer the flag; and
+`updateCategoryGroup` reads `group.name.toUpperCase()` in its duplicate-name
+check even when the patch omits a name, so the repo resends the current name on
+every update to avoid a `TypeError` thrown from inside the library.
 
 ### Context & operations
 

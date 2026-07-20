@@ -122,12 +122,72 @@ export function budgetTools(repos: Pick<ActualRepos, 'budgets'>): ToolDefinition
     }),
 
     defineTool({
+      name: 'list_category_groups',
+      title: 'List category groups',
+      description:
+        'List the groups categories are filed under, with their ids and how many categories each holds. Use ' +
+        'this to find the `groupId` for `create_category` — `list_categories` only names groups that already ' +
+        'have a visible category, so a new or empty group (`categoryCount: 0`) is only discoverable here.',
+      inputSchema: {
+        includeHidden: z.boolean().optional().describe('Include hidden groups. Defaults to false.'),
+      },
+      run: async (args) => {
+        const { includeHidden } = z.object({ includeHidden: z.boolean().optional() }).parse(args);
+        return { groups: await repos.budgets.listCategoryGroups({ includeHidden }) };
+      },
+    }),
+
+    defineTool({
+      name: 'create_category_group',
+      title: 'Create a category group',
+      description:
+        'Create an empty category group to file categories under, then fill it with `create_category`. Groups ' +
+        'are spending groups: Actual’s API cannot create an income group, and every budget already has the ' +
+        'one it needs.',
+      inputSchema: {
+        name: z.string().min(1).describe('Name for the new group.'),
+        hidden: z.boolean().optional().describe('Create it hidden. Defaults to false.'),
+      },
+      write: true,
+      run: async (args) => {
+        const input = z.object({ name: z.string().min(1), hidden: z.boolean().optional() }).parse(args);
+        return { group: await repos.budgets.createCategoryGroup(input) };
+      },
+    }),
+
+    defineTool({
+      name: 'update_category_group',
+      title: 'Update a category group',
+      description:
+        'Rename a category group or hide/unhide it. Only the fields you pass are changed. Hiding a group hides ' +
+        'every category in it, so `list_categories` will report those categories as hidden — unhide the group ' +
+        'here rather than trying to unhide them one by one.',
+      inputSchema: {
+        id: z.string().min(1).describe('Id of the group to change, from list_category_groups.'),
+        name: z.string().min(1).optional().describe('New name.'),
+        hidden: z.boolean().optional().describe('Hide or unhide the group and everything in it.'),
+      },
+      write: true,
+      idempotent: true,
+      run: async (args) => {
+        const { id, ...fields } = z
+          .object({
+            id: z.string().min(1),
+            name: z.string().min(1).optional(),
+            hidden: z.boolean().optional(),
+          })
+          .parse(args);
+        return { group: await repos.budgets.updateCategoryGroup(id, fields) };
+      },
+    }),
+
+    defineTool({
       name: 'create_category',
       title: 'Create a category',
       description:
-        'Create a budget category inside an existing category group. Get the group id from `list_categories` ' +
-        '(each category reports its `groupId`). Income categories behave differently from spending ones — set ' +
-        '`isIncome` only for money coming in.',
+        'Create a budget category inside an existing category group. Get the group id from ' +
+        '`list_category_groups`, or create the group first with `create_category_group`. Income categories ' +
+        'behave differently from spending ones — set `isIncome` only for money coming in.',
       inputSchema: {
         name: z.string().min(1).describe('Name for the new category.'),
         groupId: z.string().min(1).describe('Id of the category group to create it in.'),

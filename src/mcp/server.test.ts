@@ -58,8 +58,65 @@ describe('createActualServer', () => {
     expect(textOf(result)).toMatch(/YYYY-MM/);
   });
 
+  it('lists category groups, empty ones included', async () => {
+    const groups = [
+      { id: 'g-1', name: 'Everyday', isIncome: false, hidden: false, categoryCount: 2 },
+      { id: 'g-2', name: 'Fresh', isIncome: false, hidden: false, categoryCount: 0 },
+    ];
+    const client = await connect(stubRepos({ budgets: { listCategoryGroups: async () => groups } }));
+    const result = await client.callTool({ name: 'list_category_groups', arguments: {} });
+    expect(result.isError).toBeFalsy();
+    expect(JSON.parse(textOf(result))).toEqual({ groups });
+  });
+
+  it('creates a category group and reports what landed', async () => {
+    const client = await connect(
+      stubRepos({
+        budgets: {
+          createCategoryGroup: async (input) => ({
+            id: 'g-9',
+            name: input.name,
+            isIncome: false,
+            hidden: Boolean(input.hidden),
+            categoryCount: 0,
+          }),
+        },
+      }),
+    );
+    const result = await client.callTool({ name: 'create_category_group', arguments: { name: 'Travel' } });
+    expect(result.isError).toBeFalsy();
+    expect(JSON.parse(textOf(result))).toEqual({
+      group: { id: 'g-9', name: 'Travel', isIncome: false, hidden: false, categoryCount: 0 },
+    });
+  });
+
+  it('passes only the fields given to a category group update', async () => {
+    let seen: unknown;
+    const client = await connect(
+      stubRepos({
+        budgets: {
+          updateCategoryGroup: async (id, fields) => {
+            seen = { id, fields };
+            return { id, name: 'Retired', isIncome: false, hidden: true, categoryCount: 1 };
+          },
+        },
+      }),
+    );
+    const result = await client.callTool({ name: 'update_category_group', arguments: { id: 'g-2', hidden: true } });
+    expect(result.isError).toBeFalsy();
+    expect(seen).toEqual({ id: 'g-2', fields: { hidden: true } });
+  });
+
   describe('the write gate', () => {
-    const writeTools = ['update_transaction', 'merge_payees', 'create_rule', 'set_budget_amount', 'update_note'];
+    const writeTools = [
+      'update_transaction',
+      'merge_payees',
+      'create_rule',
+      'set_budget_amount',
+      'update_note',
+      'create_category_group',
+      'update_category_group',
+    ];
 
     it('advertises write tools when writes are enabled', async () => {
       const { tools } = await (await connect(stubRepos(), true)).listTools();
@@ -78,6 +135,7 @@ describe('createActualServer', () => {
       // Reads survive the gate.
       expect(names).toContain('list_accounts');
       expect(names).toContain('search_transactions');
+      expect(names).toContain('list_category_groups');
     });
 
     it('refuses to call a write tool that is not registered', async () => {

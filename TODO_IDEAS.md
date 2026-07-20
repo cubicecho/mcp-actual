@@ -48,6 +48,14 @@ every other mutation — not a separate tier.
 
 ## Other ideas
 
+- **Reordering categories and groups** (`category-move`, `categories-sort`) —
+  not exposed by `@actual-app/api`'s public surface, only by internal handlers.
+  Sort order is presentation, and an agent reshuffling someone's budget layout
+  is a poor trade for reaching past the supported API.
+- **Income category groups** — `create_category_group` cannot make one:
+  `api/category-group-create` forwards only `name` and `hidden` and drops
+  `is_income`. Every budget ships with the income group it needs, so this waits
+  on upstream rather than on a workaround here.
 - **Transaction creation / import** (`addTransactions`, `importTransactions`) —
   useful for cash entry and CSV import, but a much larger validation surface
   (split transactions, transfer semantics, dedupe by `imported_id`).

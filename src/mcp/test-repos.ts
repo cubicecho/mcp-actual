@@ -23,6 +23,9 @@ export function stubRepos(overrides: Partial<{ [K in keyof ActualRepos]: Partial
       listCategories: unimplemented('budgets.listCategories'),
       createCategory: unimplemented('budgets.createCategory'),
       updateCategory: unimplemented('budgets.updateCategory'),
+      listCategoryGroups: unimplemented('budgets.listCategoryGroups'),
+      createCategoryGroup: unimplemented('budgets.createCategoryGroup'),
+      updateCategoryGroup: unimplemented('budgets.updateCategoryGroup'),
     },
     context: {
       resolveNameToId: unimplemented('context.resolveNameToId'),

@@ -1,5 +1,13 @@
-import { describe, expect, it } from 'vitest';
-import { mapCategories } from './budgets.ts';
+import { describe, expect, it, vi } from 'vitest';
+import { createBudgetsRepo, mapCategories, mapCategoryGroups } from './budgets.ts';
+
+const updateCategoryGroup = vi.fn(async () => undefined);
+const getCategoryGroups = vi.fn(async () => [{ id: 'g-2', name: 'Retired', is_income: false, hidden: false }]);
+
+vi.mock('@actual-app/api', () => ({
+  getCategoryGroups: (...args: unknown[]) => getCategoryGroups(...(args as [])),
+  updateCategoryGroup: (...args: unknown[]) => updateCategoryGroup(...(args as [])),
+}));
 
 const GROUPS = [
   { id: 'g-1', name: 'Everyday', hidden: false },
@@ -31,5 +39,43 @@ describe('mapCategories', () => {
   it('reads the group id from either group or group_id', () => {
     const raw = [{ id: 'c-4', name: 'Rent', group_id: 'g-1' }] as Parameters<typeof mapCategories>[1];
     expect(mapCategories(GROUPS, raw, false)[0]).toMatchObject({ groupId: 'g-1', groupName: 'Everyday' });
+  });
+});
+
+describe('mapCategoryGroups', () => {
+  const RAW_GROUPS = [
+    { id: 'g-1', name: 'Everyday', is_income: false, hidden: false, categories: [{}, {}] },
+    { id: 'g-2', name: 'Retired', is_income: false, hidden: true, categories: [{}] },
+    { id: 'g-3', name: 'Fresh', is_income: false, hidden: false },
+  ];
+
+  it('excludes hidden groups by default', () => {
+    expect(mapCategoryGroups(RAW_GROUPS, false).map((group) => group.id)).toEqual(['g-1', 'g-3']);
+  });
+
+  it('includes hidden groups on request', () => {
+    expect(mapCategoryGroups(RAW_GROUPS, true).map((group) => group.id)).toEqual(['g-1', 'g-2', 'g-3']);
+  });
+
+  it('counts the categories in a group, reporting 0 for an empty one', () => {
+    const counts = mapCategoryGroups(RAW_GROUPS, true).map((group) => group.categoryCount);
+    expect(counts).toEqual([2, 1, 0]);
+  });
+});
+
+describe('updateCategoryGroup', () => {
+  const repo = createBudgetsRepo({ run: (fn) => fn() } as Parameters<typeof createBudgetsRepo>[0]);
+
+  it('resends the current name on a hidden-only change', async () => {
+    // Actual's duplicate-name check calls `group.name.toUpperCase()` even when
+    // the patch has no name, so omitting it throws a TypeError from the library.
+    await repo.updateCategoryGroup('g-2', { hidden: true });
+    expect(updateCategoryGroup).toHaveBeenCalledWith('g-2', { name: 'Retired', hidden: true });
+  });
+
+  it('fails with a readable message for an unknown id', async () => {
+    await expect(repo.updateCategoryGroup('nope', { hidden: true })).rejects.toThrow(
+      'No category group with id "nope"',
+    );
   });
 });

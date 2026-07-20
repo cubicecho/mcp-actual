@@ -61,8 +61,11 @@ they are not advertised at all.
 | `set_budget_carryover` | ✏️ | Roll a category's balance into the next month, or stop. |
 | `hold_for_next_month` | ✏️ | Hold surplus back for next month. |
 | `reset_budget_hold` | ✏️ | Release a held amount. |
+| `list_category_groups` | | Groups with their ids and category counts — the only way to see an empty group. |
 | `create_category` | ✏️ | Create a category in a group. |
 | `update_category` | ✏️ | Rename, move, or hide a category. |
+| `create_category_group` | ✏️ | Create an empty group to file categories under. |
+| `update_category_group` | ✏️ | Rename a group, or hide/unhide it and everything in it. |
 
 There are no delete tools — see [TODO_IDEAS.md](TODO_IDEAS.md). All amounts are
 integer cents (`amount`), with a decimal sibling (`amountDecimal`) for display;

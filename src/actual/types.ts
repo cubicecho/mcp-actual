@@ -42,6 +42,15 @@ export interface Category {
   hidden: boolean;
 }
 
+export interface CategoryGroup {
+  id: string;
+  name: string;
+  isIncome: boolean;
+  hidden: boolean;
+  /** Categories the group holds, hidden ones included — 0 marks an empty group. */
+  categoryCount: number;
+}
+
 export interface Payee {
   id: string;
   name: string;
