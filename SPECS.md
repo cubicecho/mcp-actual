@@ -15,8 +15,9 @@ live in [TODO_IDEAS.md](TODO_IDEAS.md).
    covered. See TODO_IDEAS.md.
 3. **All tools are always advertised** (subject to 1). No per-group config —
    revisit only if tool-list size becomes a measured problem.
-4. **No rule dry-run and no raw AQL tool.** Both deferred with reasons in
-   TODO_IDEAS.md.
+4. **No raw AQL tool.** Deferred with reasons in TODO_IDEAS.md. The rule
+   dry-run was deferred alongside it and has since been **partly reversed** —
+   see "Rule preview" below for what changed and what stayed rejected.
 5. **Amounts are always integer minor units (cents)** on the wire, in both
    directions. Tools additionally *return* a decimal for display, but never
    *accept* one — float money input is a correctness trap.
@@ -41,11 +42,45 @@ live in [TODO_IDEAS.md](TODO_IDEAS.md).
 | `describe_rule_schema` | *(static)* — legal fields, the operators valid for each, worked examples | R |
 | `create_rule` | `createRule` | W |
 | `update_rule` | `updateRule` | W |
+| `preview_rule_effects` | `send('rules-run')` | R |
+| `apply_rule_actions` | `send('rule-apply-actions')` | W |
 
 `describe_rule_schema` exists because `RuleConditionEntity` is a discriminated
 union of ~12 field types each with its own legal operators, plus 6 action
 shapes. An agent authoring that blind from a prose description will fail; this
 tool is the cheapest fix.
+
+#### Rule preview
+
+The original decision was "no dry-run, because Actual exposes no endpoint and
+reimplementing condition matching would drift". The first half turned out to be
+wrong: `init()` returns a **typed** `send<K extends keyof Handlers>` channel
+(`@actual-app/api/@types/index.d.ts`), the deprecated `internal` export points
+at it, and `RulesHandlers` types both `rules-run` and `rule-apply-actions`.
+`ActualClient.send` exposes that channel; it is for what `@actual-app/api` never
+re-exports as a function, not a general-purpose bypass.
+
+The second half of the objection still stands, and shapes both tools:
+
+- **`preview_rule_effects` reports the whole rule set, not one rule.**
+  `rules-run` takes a transaction and runs every ranked rule over it. The
+  per-rule matcher (`conditionsToAQL`) is internal to the bundle and is *not* a
+  registered handler, so single-rule preview would still mean reimplementing
+  matching — rejected for the original reason. Reporting the net effect is also
+  the more truthful answer, since rules interact by rank.
+- **`apply_rule_actions` takes ids, never a filter.** `rule-apply-actions`
+  applies actions *unconditionally* to the transactions handed to it — it does
+  not evaluate conditions. Taking a filter would let an agent rewrite a set it
+  never looked at, so the tool takes an explicit id list capped at 500 and
+  reports ids that did not exist rather than dropping them silently.
+
+The handler returns `null` when it cannot parse an action; that is surfaced as a
+tool error, because a silent no-op reads as success.
+
+Each previewed change carries **both** the display name and the raw id
+(`from`/`to` plus `fromId`/`toId`). Names alone were unusable — actions take ids
+as values, so a name-only diff forced an ambiguous `resolve_name_to_id`
+round-trip between preview and apply; ids alone were unreadable.
 
 ### Payees
 
@@ -129,6 +164,34 @@ every update to avoid a `TypeError` thrown from inside the library.
 
 \* `sync_budget` mutates nothing locally that the user did not already cause —
 it pulls the server's state. Treated as a read.
+
+## Prompts
+
+The server exposes MCP **prompts** as well as tools, in `src/mcp/prompts.ts`,
+behind the same registry-plus-gate shape as tools.
+
+| Prompt | | |
+| --- | --- | --- |
+| `backfill_rule` | preview → confirm → apply, for backfilling a rule over existing transactions | W |
+
+A prompt is guidance, not access: it cannot reach the budget, so all it adds is
+an ordering over tool calls the agent would otherwise have to infer. That is
+worth having precisely where the tools are sharp — `preview_rule_effects`
+reports the whole rule set rather than one rule, and `apply_rule_actions` does
+not re-check conditions — so `backfill_rule` exists to force preview-then-
+confirm before any bulk write.
+
+Two constraints, both observed rather than assumed:
+
+- **Prompts are write-gated like tools.** A workflow ending in a mutating tool
+  is withheld when `ACTUAL_ENABLE_WRITES` is off, for the same reason those
+  tools are. Since `backfill_rule` is currently the only prompt, a read-only
+  server registers none and therefore advertises no prompts capability at all —
+  `prompts/list` returns *Method not found*, not an empty list.
+- **A declared `argsSchema` makes `arguments` mandatory**, even when every
+  argument in it is optional: a request omitting the member outright fails
+  validation. Clients must send `arguments: {}`. This is the same sharp edge
+  already worked around for no-input tools in `server.ts`.
 
 ## Conventions for new tools
 

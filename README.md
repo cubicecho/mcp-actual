@@ -50,6 +50,8 @@ they are not advertised at all.
 | `list_rules` | | All rules, or only those for one payee. |
 | `create_rule` | ✏️ | Create a rule from conditions and actions. |
 | `update_rule` | ✏️ | Replace a rule wholesale. |
+| `preview_rule_effects` | | What the rules would change on real transactions, saving nothing. Reports the whole rule set, not one rule. |
+| `apply_rule_actions` | ✏️ | Apply actions to an explicit list of transaction ids (max 500) and save. |
 
 **Budgets**
 
@@ -92,6 +94,21 @@ Example `list_accounts` result:
 
 Totals cover open (non-closed) accounts; `onBudgetTotal` excludes off-budget
 tracking accounts. The budget is synced with the server before every read.
+
+## Prompts
+
+The server also exposes an MCP prompt, so a client can pull a vetted workflow
+instead of you writing one.
+
+| Prompt | | |
+| --- | --- | --- |
+| `backfill_rule` | ✏️ | Apply a rule to transactions that already exist: author it, preview what changes, confirm, then apply. |
+
+It takes optional `goal` ("categorize Starbucks as Coffee") and `scope` ("since
+2026-01-01") arguments, and asks rather than guessing when they are absent. Use
+it in preference to calling `apply_rule_actions` yourself — that tool applies
+actions unconditionally, and the prompt is what enforces previewing first. Like
+the write tools, it is not advertised when `ACTUAL_ENABLE_WRITES` is off.
 
 ## What you need before you start
 

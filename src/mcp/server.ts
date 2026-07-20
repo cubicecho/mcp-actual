@@ -2,6 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ActualRepos } from '../actual/index.ts';
 import { errorChainMessage } from '../errors.ts';
 import { SERVER_VERSION } from '../version.ts';
+import { enabledPrompts } from './prompts.ts';
 import type { ToolDefinition } from './tool.ts';
 import { accountTools } from './tools/accounts.ts';
 import { budgetTools } from './tools/budgets.ts';
@@ -74,6 +75,16 @@ export function createActualServer(deps: ActualServerDeps): McpServer {
           return { content: [{ type: 'text' as const, text: errorChainMessage(err) }], isError: true };
         }
       },
+    );
+  }
+
+  for (const prompt of enabledPrompts(deps.enableWrites)) {
+    server.registerPrompt(
+      prompt.name,
+      { title: prompt.title, description: prompt.description, argsSchema: prompt.argsSchema },
+      (args: Record<string, string | undefined>) => ({
+        messages: [{ role: 'user' as const, content: { type: 'text' as const, text: prompt.build(args ?? {}) } }],
+      }),
     );
   }
 

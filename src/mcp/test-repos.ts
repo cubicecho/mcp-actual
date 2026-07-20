@@ -48,6 +48,8 @@ export function stubRepos(overrides: Partial<{ [K in keyof ActualRepos]: Partial
       list: unimplemented('rules.list'),
       create: unimplemented('rules.create'),
       update: unimplemented('rules.update'),
+      previewEffects: unimplemented('rules.previewEffects'),
+      applyActions: unimplemented('rules.applyActions'),
     },
     transactions: {
       search: unimplemented('transactions.search'),

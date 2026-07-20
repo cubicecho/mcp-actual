@@ -114,6 +114,43 @@ export interface Rule {
   actions: unknown[];
 }
 
+/** One field a rule run would rewrite. */
+export interface RuleFieldChange {
+  /** Display value — a name for id-bearing fields (payee, category), the raw value otherwise. */
+  from: unknown;
+  to: unknown;
+  /**
+   * The underlying ids, present only for id-bearing fields. `toId` is the value
+   * an `apply_rule_actions` action needs, so the preview stays actionable
+   * without a second name→id lookup.
+   */
+  fromId?: string | null;
+  toId?: string | null;
+}
+
+/** A transaction the rule set would touch, and what it would change on it. */
+export interface RulePreviewEntry {
+  transactionId: string;
+  date: string;
+  payeeName?: string;
+  amount: number;
+  amountDecimal: number;
+  /** Keyed by field name; only fields the rules actually change appear. */
+  changes: Record<string, RuleFieldChange>;
+}
+
+/**
+ * The result of running the rule set over a set of transactions **without
+ * saving anything**. `scanned` counts what was evaluated, not what changed —
+ * an empty `entries` with a large `scanned` means the rules are a no-op here.
+ */
+export interface RulePreview {
+  entries: RulePreviewEntry[];
+  scanned: number;
+  /** True when more transactions matched the filter than `limit` allowed. */
+  truncated: boolean;
+}
+
 export interface BudgetMonthSummary {
   month: string;
   /** Still unbudgeted this month. */

@@ -3,6 +3,19 @@ import * as api from '@actual-app/api';
 import type { Config } from '../config.ts';
 import { errorChainMessage } from '../errors.ts';
 
+/** What `init` hands back — the typed handler channel, among other things. */
+type ActualLib = Awaited<ReturnType<typeof api.init>>;
+
+/**
+ * Call an Actual server handler by name. This is the supported escape hatch for
+ * the handful of operations `@actual-app/api` never re-exports as functions
+ * (the rule engine, notably): `send` is typed against `Handlers`, and the old
+ * top-level `internal` export is deprecated *in favour of* it.
+ *
+ * Reach for a named `api.*` function first — this is for what is missing there.
+ */
+export type ActualSend = ActualLib['send'];
+
 /**
  * `@actual-app/api` is a process-wide singleton: `init` opens one SQLite budget
  * and every other call reads that global state, so two overlapping calls would
@@ -20,6 +33,8 @@ export class ActualClient {
   /** Tail of the serialized operation queue — every `run` links onto it. */
   private queue: Promise<unknown> = Promise.resolve();
   private shuttingDown = false;
+  /** `init`'s return value, kept for {@link send}. Null until the budget is open. */
+  private lib: ActualLib | null = null;
 
   constructor(config: Config) {
     this.config = config;
@@ -48,6 +63,18 @@ export class ActualClient {
     return result;
   }
 
+  /**
+   * The typed handler channel (see {@link ActualSend}). Only valid once the
+   * budget is open, so call it **inside** {@link run} — it does not serialize
+   * on its own, and reading it before the budget opens throws.
+   */
+  get send(): ActualSend {
+    if (!this.lib) {
+      throw new Error('Actual budget is not open — use ActualClient.send inside ActualClient.run');
+    }
+    return this.lib.send;
+  }
+
   /** Close the budget and release the API's resources. Safe to call more than once. */
   async close(): Promise<void> {
     if (this.shuttingDown) {
@@ -59,6 +86,7 @@ export class ActualClient {
     if (this.ready) {
       await api.shutdown().catch(() => {});
       this.ready = null;
+      this.lib = null;
     }
   }
 
@@ -81,7 +109,7 @@ export class ActualClient {
     const { dataDir, serverUrl, password, syncId, encryptionPassword } = this.config;
     await mkdir(dataDir, { recursive: true });
     try {
-      await api.init({ dataDir, serverURL: serverUrl, password });
+      this.lib = await api.init({ dataDir, serverURL: serverUrl, password });
     } catch (cause) {
       throw new Error(`Failed to connect to the Actual server at ${serverUrl}: ${errorChainMessage(cause)}`, { cause });
     }
@@ -90,6 +118,7 @@ export class ActualClient {
     } catch (cause) {
       // Shut the half-open API down so the next attempt starts from a clean slate.
       await api.shutdown().catch(() => {});
+      this.lib = null;
       throw new Error(`Failed to open budget "${syncId}": ${errorChainMessage(cause)}`, { cause });
     }
   }

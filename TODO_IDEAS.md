@@ -4,21 +4,27 @@ Ideas considered and deliberately **not** built yet. Each entry records why it
 was deferred, so revisiting it starts from the reasoning rather than from
 scratch. Nothing here is committed work — treat it as a menu, not a backlog.
 
-## Rule dry-run (`preview_rule`)
+## Single-rule dry-run (`preview_rule`)
 
-Show which recent transactions a rule *would* match, and what it would change,
-before saving it.
+Show which transactions **one specific rule** would match, in isolation from
+the others.
 
-**Why deferred:** Actual exposes no dry-run endpoint. Implementing it means
-reimplementing Actual's condition matching (a dozen field types, each with its
-own operators, plus `isapprox` fuzziness and schedule-aware date recurrences)
-and that reimplementation would inevitably drift from the real engine. A
-preview that quietly disagrees with what the rule actually does is worse than
-no preview, because it is trusted.
+**Partly built.** The general case shipped as `preview_rule_effects`, which runs
+Actual's own engine (`rules-run`) over real transactions and reports the net
+effect of the entire ranked rule set — see SPECS.md. What is still deferred is
+narrowing that to a single rule.
 
-**Revisit if:** upstream adds a dry-run/simulate endpoint, or we find that the
-matching logic is exposed somewhere reusable in `@actual-app/core` rather than
-locked inside the server's rule engine.
+**Why still deferred:** `rules-run` only accepts a transaction and runs every
+rule over it. The piece that turns one rule's conditions into a query,
+`conditionsToAQL`, is internal to the bundle and is not a registered handler, so
+single-rule preview would still mean reimplementing condition matching (a dozen
+field types each with its own operators, plus `isapprox` fuzziness and
+schedule-aware date recurrences). That reimplementation would drift from the
+real engine, and a preview that quietly disagrees with what the rule actually
+does is worse than no preview, because it is trusted.
+
+**Revisit if:** upstream registers a handler that evaluates conditions for a
+single rule, or exposes `conditionsToAQL` on the handler surface.
 
 ## Raw AQL query tool
 

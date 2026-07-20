@@ -116,6 +116,30 @@ const RULE_SCHEMA_DOC = {
   ],
 } as const;
 
+/** Ceiling on a single bulk apply. A runaway loop should hit a wall, not rewrite the budget. */
+const MAX_BATCH = 500;
+
+/** Filters selecting which transactions to preview against. Mirrors `search_transactions`. */
+const previewFilterSchema = {
+  dateFrom: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional()
+    .describe('Only transactions on or after this date (YYYY-MM-DD).'),
+  dateTo: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional()
+    .describe('Only transactions on or before this date (YYYY-MM-DD).'),
+  accountId: z.string().min(1).optional().describe('Restrict to one account.'),
+  payeeId: z.string().min(1).optional().describe('Restrict to one payee.'),
+  categoryId: z.string().min(1).optional().describe('Restrict to one category.'),
+  uncategorized: z.boolean().optional().describe('Only transactions with no category — the usual cleanup target.'),
+  notesContains: z.string().min(1).optional().describe('Substring match against notes.'),
+  payeeNameContains: z.string().min(1).optional().describe('Substring match against the payee name.'),
+  limit: z.number().int().min(1).max(MAX_BATCH).optional().describe('How many transactions to scan. Default 100.'),
+};
+
 export function ruleTools(repos: Pick<ActualRepos, 'rules'>): ToolDefinition[] {
   return [
     defineTool({
@@ -208,6 +232,63 @@ export function ruleTools(repos: Pick<ActualRepos, 'rules'>): ToolDefinition[] {
             actions: body.actions,
           }),
         };
+      },
+    }),
+
+    defineTool({
+      name: 'preview_rule_effects',
+      title: 'Preview what the rules would change',
+      description:
+        'Run the budget’s rules over EXISTING transactions without saving anything, and report the field ' +
+        'changes they would make. Actual applies rules on import and edit only, so transactions already in ' +
+        'the budget are untouched until you act on them — this shows what a rule would have done to them. ' +
+        'The usual flow is `create_rule`, then this to check it against real data, then `apply_rule_actions` ' +
+        'to make the changes stick.\n' +
+        'IMPORTANT: this reports the net effect of the ENTIRE rule set, not one rule in isolation. Actual has ' +
+        'no per-rule preview, and rules interact by rank, so a change shown here may come from a rule other ' +
+        'than the one you just wrote. Verify against `list_rules` before assuming which rule caused it.\n' +
+        'Each change gives `from`/`to` as readable names plus `fromId`/`toId` for the fields that hold ids — ' +
+        'pass `toId` as the action `value` to `apply_rule_actions`. Transactions the rules would not change ' +
+        'are omitted, so an empty `entries` with a non-zero `scanned` means the rules are a no-op here.',
+      inputSchema: previewFilterSchema,
+      run: async (args) => {
+        const filters = z
+          .object({ ...previewFilterSchema, limit: z.number().int().min(1).max(MAX_BATCH).optional() })
+          .parse(args);
+        return repos.rules.previewEffects({ ...filters, limit: filters.limit ?? 100 });
+      },
+    }),
+
+    defineTool({
+      name: 'apply_rule_actions',
+      title: 'Apply rule actions to transactions',
+      description:
+        'Apply rule actions to specific transactions and SAVE the result. This is the write half of ' +
+        '`preview_rule_effects`: preview first, then pass the transaction ids it returned.\n' +
+        'The actions are applied UNCONDITIONALLY to every id you pass — rule conditions are NOT evaluated ' +
+        'here, so a wrong id is silently changed rather than skipped. Pass only ids you have actually seen, ' +
+        'from `preview_rule_effects` or `search_transactions`; never ids you assembled yourself.\n' +
+        `Edits real transactions in bulk, at most ${MAX_BATCH} per call, and cannot be undone through this ` +
+        'server. Actions use the same format as `create_rule` (see `describe_rule_schema`), and values are ' +
+        'ids, not names — `preview_rule_effects` reports these as `toId`. Returns the ids actually updated, ' +
+        'plus any that did not exist under `missing`.',
+      inputSchema: {
+        transactionIds: z
+          .array(z.string().min(1))
+          .min(1)
+          .max(MAX_BATCH)
+          .describe(`Ids of the transactions to change. At most ${MAX_BATCH}.`),
+        actions: z.array(actionSchema).min(1).describe('Actions to apply. Same format as create_rule.'),
+      },
+      write: true,
+      run: async (args) => {
+        const { transactionIds, actions } = z
+          .object({
+            transactionIds: z.array(z.string().min(1)).min(1).max(MAX_BATCH),
+            actions: z.array(actionSchema).min(1),
+          })
+          .parse(args);
+        return repos.rules.applyActions(transactionIds, actions);
       },
     }),
   ] as ToolDefinition[];

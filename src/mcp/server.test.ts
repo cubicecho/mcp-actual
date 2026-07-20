@@ -107,6 +107,137 @@ describe('createActualServer', () => {
     expect(seen).toEqual({ id: 'g-2', fields: { hidden: true } });
   });
 
+  describe('rule preview and apply', () => {
+    it('previews rule effects without writing, passing the filters through', async () => {
+      let seen: unknown;
+      const preview = {
+        entries: [
+          {
+            transactionId: 't-1',
+            date: '2026-07-01',
+            payeeName: 'AMZN Mktp US*2H4',
+            amount: -2500,
+            amountDecimal: -25,
+            changes: { category: { from: null, to: 'Shopping' } },
+          },
+        ],
+        scanned: 40,
+        truncated: false,
+      };
+      const client = await connect(
+        stubRepos({
+          rules: {
+            previewEffects: async (filters) => {
+              seen = filters;
+              return preview;
+            },
+          },
+        }),
+      );
+      const result = await client.callTool({
+        name: 'preview_rule_effects',
+        arguments: { uncategorized: true, dateFrom: '2026-01-01' },
+      });
+      expect(result.isError).toBeFalsy();
+      expect(JSON.parse(textOf(result))).toEqual(preview);
+      // The limit is defaulted at the tool boundary, not left for the repo to guess.
+      expect(seen).toEqual({ uncategorized: true, dateFrom: '2026-01-01', limit: 100 });
+    });
+
+    it('is advertised as a read tool, so it survives the write gate', async () => {
+      const { tools } = await (await connect(stubRepos(), false)).listTools();
+      const names = tools.map((tool) => tool.name);
+      expect(names).toContain('preview_rule_effects');
+      expect(names).not.toContain('apply_rule_actions');
+    });
+
+    it('applies actions to the ids given and reports what changed', async () => {
+      let seen: unknown;
+      const client = await connect(
+        stubRepos({
+          rules: {
+            applyActions: async (transactionIds, actions) => {
+              seen = { transactionIds, actions };
+              return { updated: ['t-1'], missing: ['t-9'], errors: [] };
+            },
+          },
+        }),
+      );
+      const result = await client.callTool({
+        name: 'apply_rule_actions',
+        arguments: {
+          transactionIds: ['t-1', 't-9'],
+          actions: [{ op: 'set', field: 'category', value: 'c-1' }],
+        },
+      });
+      expect(result.isError).toBeFalsy();
+      expect(JSON.parse(textOf(result))).toEqual({ updated: ['t-1'], missing: ['t-9'], errors: [] });
+      expect(seen).toEqual({
+        transactionIds: ['t-1', 't-9'],
+        actions: [{ op: 'set', field: 'category', value: 'c-1' }],
+      });
+    });
+
+    it('refuses a bulk apply larger than the cap', async () => {
+      const client = await connect(stubRepos());
+      const result = await client.callTool({
+        name: 'apply_rule_actions',
+        arguments: {
+          transactionIds: Array.from({ length: 501 }, (_, i) => `t-${i}`),
+          actions: [{ op: 'set', field: 'category', value: 'c-1' }],
+        },
+      });
+      expect(result.isError).toBe(true);
+    });
+
+    it('rejects an action whose op is not a real rule action', async () => {
+      const client = await connect(stubRepos());
+      const result = await client.callTool({
+        name: 'apply_rule_actions',
+        arguments: { transactionIds: ['t-1'], actions: [{ op: 'drop-table', value: 'x' }] },
+      });
+      expect(result.isError).toBe(true);
+    });
+  });
+
+  describe('the backfill_rule prompt', () => {
+    it('advertises the prompt with its arguments', async () => {
+      const { prompts } = await (await connect(stubRepos())).listPrompts();
+      const prompt = prompts.find((entry) => entry.name === 'backfill_rule');
+      expect(prompt).toBeDefined();
+      expect(prompt?.arguments?.map((arg) => arg.name).sort()).toEqual(['goal', 'scope']);
+    });
+
+    it('weaves the goal and scope into the workflow', async () => {
+      const client = await connect(stubRepos());
+      const result = await client.getPrompt({
+        name: 'backfill_rule',
+        arguments: { goal: 'categorize Starbucks as Coffee', scope: 'since 2026-01-01' },
+      });
+      const text = (result.messages[0]!.content as { text: string }).text;
+      expect(text).toContain('The rule I want: categorize Starbucks as Coffee');
+      expect(text).toContain('Limit the backfill to: since 2026-01-01');
+      // The ordering the tools depend on must survive into the rendered prompt.
+      expect(text.indexOf('preview_rule_effects')).toBeLessThan(text.indexOf('apply_rule_actions'));
+    });
+
+    it('tells the agent to ask rather than invent a rule when called with no arguments', async () => {
+      const client = await connect(stubRepos());
+      // Both arguments are optional, but a declared argsSchema still rejects a
+      // request carrying no `arguments` member at all — clients must send `{}`.
+      const result = await client.getPrompt({ name: 'backfill_rule', arguments: {} });
+      const text = (result.messages[0]!.content as { text: string }).text;
+      expect(text).toContain('do not guess a rule');
+    });
+
+    it('is withheld when writes are off, since it ends in a write tool', async () => {
+      const client = await connect(stubRepos(), false);
+      // Withholding the only prompt leaves the server with no prompts
+      // capability at all, so the method is absent rather than returning empty.
+      await expect(client.listPrompts()).rejects.toThrow(/Method not found/);
+    });
+  });
+
   describe('the write gate', () => {
     const writeTools = [
       'update_transaction',
@@ -116,6 +247,7 @@ describe('createActualServer', () => {
       'update_note',
       'create_category_group',
       'update_category_group',
+      'apply_rule_actions',
     ];
 
     it('advertises write tools when writes are enabled', async () => {
