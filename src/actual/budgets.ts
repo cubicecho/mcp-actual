@@ -7,14 +7,24 @@ export interface BudgetsRepo {
   getMonth(month: string): Promise<BudgetMonthSummary>;
   setAmount(month: string, categoryId: string, amount: number): Promise<BudgetCategory | null>;
   setCarryover(month: string, categoryId: string, flag: boolean): Promise<BudgetCategory | null>;
-  holdForNextMonth(month: string, amount: number): Promise<boolean>;
-  resetHold(month: string): Promise<void>;
+  holdForNextMonth(month: string, amount: number): Promise<BudgetHoldResult>;
+  resetHold(month: string): Promise<{ forNextMonth: number }>;
   listCategories(options?: { includeHidden?: boolean }): Promise<Category[]>;
   createCategory(input: CategoryInput): Promise<Category | null>;
   updateCategory(id: string, fields: Partial<CategoryInput>): Promise<Category | null>;
   listCategoryGroups(options?: { includeHidden?: boolean }): Promise<CategoryGroup[]>;
   createCategoryGroup(input: CategoryGroupInput): Promise<CategoryGroup | null>;
   updateCategoryGroup(id: string, fields: Partial<CategoryGroupInput>): Promise<CategoryGroup | null>;
+}
+
+/** What a hold actually did, as opposed to what was asked for. */
+export interface BudgetHoldResult {
+  /** Actual's own return: true when there was surplus to hold from at all. */
+  held: boolean;
+  /** How much the buffer actually grew — less than requested when clamped. */
+  heldAmount: number;
+  /** The resulting total held for next month. */
+  forNextMonth: number;
 }
 
 export interface CategoryInput {
@@ -199,29 +209,88 @@ export function createBudgetsRepo(client: ActualClient): BudgetsRepo {
       }),
 
     setAmount: (month, categoryId, amount) =>
-      client.run(async () => {
+      client.read(async () => {
+        // `api/budget-set-amount` validates nothing: it inserts a budget row for
+        // any month string and any category. An unknown month leaves a junk row
+        // behind and then fails on read-back, and an income category has no
+        // budget cell at all on an envelope budget, so the write lands nowhere
+        // while the tool reports `budgeted: 0` — indistinguishable from success.
+        const category = (await readCategories(true)).find((candidate) => candidate.id === categoryId);
+        if (!category) {
+          throw new Error(`No category with id "${categoryId}"`);
+        }
+        if (category.isIncome) {
+          throw new Error(
+            `"${category.name}" is an income category, which cannot be budgeted — Actual would accept the write ` +
+              'and discard it. Income is tracked as `received`, not budgeted.',
+          );
+        }
+        if (!(await api.getBudgetMonths()).includes(month)) {
+          throw new Error(`No budget exists for month ${month}. Use list_budget_months to see the valid range.`);
+        }
         await api.setBudgetAmount(month, categoryId, amount);
         return readBudgetCategory(month, categoryId);
       }),
 
+    /**
+     * Set a category's rollover flag. Actual's `setCategoryCarryover` applies
+     * the flag to `getAllMonths(startMonth)` — every month from this one to the
+     * end of the budget range (today + 12) — not just the month given. The
+     * return value reports only the named month, so the wider effect is stated
+     * in the tool description rather than left invisible.
+     */
     setCarryover: (month, categoryId, flag) =>
       client.run(async () => {
         await api.setBudgetCarryover(month, categoryId, flag);
         return readBudgetCategory(month, categoryId);
       }),
 
-    holdForNextMonth: (month, amount) => client.run(() => api.holdBudgetForNextMonth(month, amount)),
+    /**
+     * Hold surplus back for next month. Actual's `holdForNextMonth` *adds* to
+     * the existing buffer (`return buffered + amount`) and clamps the amount to
+     * what is actually available, yet returns `true` whenever `to-budget > 0` —
+     * so a clamped, partial hold is indistinguishable from the full one. Read
+     * the resulting buffer back so the caller sees what really landed.
+     */
+    holdForNextMonth: (month, amount) =>
+      client.read(async () => {
+        const before = (await api.getBudgetMonth(month)).forNextMonth;
+        const held = await api.holdBudgetForNextMonth(month, amount);
+        const after = (await api.getBudgetMonth(month)).forNextMonth;
+        return { held, heldAmount: after - before, forNextMonth: after };
+      }),
 
-    resetHold: (month) => client.run(() => api.resetBudgetHold(month)),
+    resetHold: (month) =>
+      client.read(async () => {
+        await api.resetBudgetHold(month);
+        return { forNextMonth: (await api.getBudgetMonth(month)).forNextMonth };
+      }),
 
     listCategories: (options) => client.read(() => readCategories(options?.includeHidden ?? false)),
 
     createCategory: (input) =>
-      client.run(async () => {
+      client.read(async () => {
+        // `categories.cat_group` has no foreign key and `createCategory` checks
+        // only that a group id is non-empty, so a wrong one creates a category
+        // that no read path can reach: every listing derives its categories
+        // from the groups. Validate before writing.
+        const groups = await readCategoryGroups(true);
+        const group = groups.find((candidate) => candidate.id === input.groupId);
+        if (!group) {
+          throw new Error(`No category group with id "${input.groupId}"`);
+        }
+        // Actual derives income-ness from the group; a category that disagrees
+        // with its group gets no budget cells and can never be budgeted.
+        if (input.isIncome !== undefined && input.isIncome !== group.isIncome) {
+          throw new Error(
+            `Category isIncome (${input.isIncome}) does not match group "${group.name}" (isIncome ${group.isIncome}). ` +
+              'Actual derives this from the group — put the category in a matching group instead.',
+          );
+        }
         const id = await api.createCategory({
           name: input.name,
           group_id: input.groupId,
-          is_income: input.isIncome,
+          is_income: group.isIncome,
           hidden: input.hidden,
         } as Parameters<typeof api.createCategory>[0]);
         // Hidden categories are excluded from the default listing, so read back
@@ -230,11 +299,21 @@ export function createBudgetsRepo(client: ActualClient): BudgetsRepo {
       }),
 
     updateCategory: (id, fields) =>
-      client.run(async () => {
-        const patch: Record<string, unknown> = {};
-        if (fields.name !== undefined) {
-          patch.name = fields.name;
+      client.read(async () => {
+        const current = (await readCategories(true)).find((category) => category.id === id);
+        if (!current) {
+          throw new Error(`No category with id "${id}"`);
         }
+        if (fields.groupId !== undefined && !(await readCategoryGroups(true)).some((g) => g.id === fields.groupId)) {
+          // No foreign key on `cat_group`: a bad group id would move the
+          // category somewhere no listing can reach it.
+          throw new Error(`No category group with id "${fields.groupId}"`);
+        }
+        // `updateCategory` does `category.name.trim()` unconditionally, even
+        // when the patch has no name, so a hidden-only or move-only update
+        // throws a TypeError from inside the library. Always resend the name —
+        // the same workaround `updateCategoryGroup` needs.
+        const patch: Record<string, unknown> = { name: fields.name ?? current.name };
         if (fields.groupId !== undefined) {
           patch.group_id = fields.groupId;
         }

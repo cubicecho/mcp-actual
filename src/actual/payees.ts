@@ -33,9 +33,14 @@ function toPayee(raw: RawPayee): Payee {
 /**
  * Reduce a payee name to a comparison key: lowercase, strip anything that is
  * not a letter or digit, and drop the trailing store/reference numbers card
- * networks append. `AMZN Mktp US*2H4G1` and `Amazon Mktp US` both collapse
- * toward `amznmktpus` / `amazonmktpus` — close enough to surface as candidates
- * for a human to judge, which is all this is for.
+ * networks append. `Trader Joe's #123` and `TRADER JOES 456` both collapse to
+ * `traderjoes`.
+ *
+ * Note what this deliberately does *not* do: it is exact-match on the key, so
+ * an abbreviation and its expansion stay apart — `AMZN Mktp US*2H4` gives
+ * `amznmktpus` and `Amazon Mktp US` gives `amazonmktpus`. Catching those needs
+ * fuzzy comparison, and a false positive here feeds an irreversible merge, so
+ * the conservative rule is the right default. Say so rather than implying more.
  */
 export function normalizePayeeName(name: string): string {
   return name
@@ -133,6 +138,12 @@ export function createPayeesRepo(client: ActualClient): PayeesRepo {
     const { data } = (await api.aqlQuery(
       api
         .q('transactions')
+        // `splits: 'none'` (parent_id IS NULL) counts a split once. The default
+        // `inline` mode returns each leg as its own row, and a leg inherits its
+        // parent's payee, so one four-way split at Costco would count as four
+        // Costco transactions — inflating exactly the number `groupDuplicates`
+        // uses to pick an irreversible merge target.
+        .options({ splits: 'none' })
         .filter({ payee: { $ne: null } })
         .select(['payee', 'date'])
         .orderBy([{ date: 'desc' }]),
@@ -197,13 +208,31 @@ export function createPayeesRepo(client: ActualClient): PayeesRepo {
       }),
 
     update: (id, fields) =>
-      client.run(async () => {
+      client.read(async () => {
+        // Actual's `db.update` is CRDT message-based: it emits column messages
+        // for the row id and `applyMessages` INSERTs when the row does not
+        // exist. So renaming an unknown id silently creates a payee — and one
+        // without the `payee_mapping` row that `insertPayee` would have made,
+        // which the transactions view resolves through, so it can never be
+        // associated with a transaction. Check first.
+        if (!(await findById(id))) {
+          throw new Error(`No payee with id "${id}"`);
+        }
         await api.updatePayee(id, { name: fields.name });
         return findById(id);
       }),
 
     create: (name) =>
-      client.run(async () => {
+      client.read(async () => {
+        // `createPayee` does no name check at all, unlike `createTag` which
+        // reuses an existing row. A duplicate is not corrupting, but it makes
+        // `resolve_name_to_id` ambiguous, so surface it rather than making one.
+        const existing = (await api.getPayees()).map(toPayee).find((payee) => payee.name === name);
+        if (existing) {
+          throw new Error(
+            `A payee named "${name}" already exists (id ${existing.id}). Use it rather than creating a duplicate.`,
+          );
+        }
         const id = await api.createPayee({ name });
         return findById(id);
       }),

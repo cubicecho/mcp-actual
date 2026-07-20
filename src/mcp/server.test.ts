@@ -398,10 +398,33 @@ describe('createActualServer', () => {
       const byName = new Map(tools.map((t) => [t.name, t]));
       expect(byName.get('list_accounts')?.annotations?.readOnlyHint).toBe(true);
       expect(byName.get('merge_payees')?.annotations?.readOnlyHint).toBe(false);
-      // A merge cannot be re-applied to the same state, so it is destructive.
-      expect(byName.get('merge_payees')?.annotations?.destructiveHint).toBe(true);
-      // Setting a budget amount twice lands on the same state.
-      expect(byName.get('set_budget_amount')?.annotations?.destructiveHint).toBe(false);
+    });
+
+    it('treats destructive and idempotent as independent, not as opposites', async () => {
+      const { tools } = await (await connect(stubRepos())).listTools();
+      const byName = new Map(tools.map((t) => [t.name, t]));
+      const annotations = (name: string) => byName.get(name)?.annotations;
+
+      // Overwrites existing state, and re-applying lands on the same state:
+      // destructive AND idempotent. Deriving one from the other would mark this
+      // non-destructive, and a client auto-approving non-destructive tools would
+      // wave through wholesale replacement of real data.
+      expect(annotations('update_note')?.destructiveHint).toBe(true);
+      expect(annotations('update_note')?.idempotentHint).toBe(true);
+      expect(annotations('set_budget_amount')?.destructiveHint).toBe(true);
+
+      // Purely additive, and not idempotent — a second call makes a second row.
+      expect(annotations('create_payee')?.destructiveHint).toBe(false);
+      expect(annotations('create_payee')?.idempotentHint).toBe(false);
+
+      // Neither idempotent nor recoverable.
+      expect(annotations('merge_payees')?.destructiveHint).toBe(true);
+      expect(annotations('merge_payees')?.idempotentHint).toBe(false);
+
+      // Reads are never destructive.
+      for (const tool of tools.filter((t) => t.annotations?.readOnlyHint)) {
+        expect(tool.annotations?.destructiveHint).toBe(false);
+      }
     });
   });
 

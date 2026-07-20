@@ -99,6 +99,40 @@ source rather than inferred from its types:
   `updated` field is `transfersUpdated` when `runTransfers` is on (the default),
   which is empty for an ordinary categorization. `applyActions` therefore
   confirms by reading the rows back instead of echoing that field.
+- **loot-core's logger defaults to verbose and writes to stdout.** A failed
+  login logs the whole request body — including `ACTUAL_PASSWORD` — via
+  `logger.log` → `console.log`, and the same logger narrates every sync, which
+  on stdio would interleave non-JSON lines into the JSON-RPC stream. `init` is
+  therefore called with `verbose: false`; warnings and errors are not gated by
+  the flag and go to stderr, so nothing diagnostic is lost.
+- **`db.update` inserts when the row is absent.** It is CRDT message-based, and
+  `applyMessages` chooses INSERT vs UPDATE purely on whether the row exists. So
+  "updating" an unknown id *creates* the entity — and for payees, without the
+  `payee_mapping` row that `insertPayee` adds, so it can never be associated
+  with a transaction. Every update path checks existence first.
+- **`schedules-get` renames its fields.** `scheduleModel.toExternal` maps
+  `_payee`/`_account`/`_amount` to `payee`/`account`/`amount`; reading the
+  underscored names off the result silently yields undefined for all of them.
+  `amount` is `{num1, num2}` rather than a number when `amountOp` is
+  `isbetween`.
+- **`updateCategory` calls `category.name.trim()` unconditionally**, exactly
+  like `updateCategoryGroup`, so a hidden-only or move-only patch throws a
+  `TypeError` from inside the library. Both resend the current name.
+- **`holdBudgetForNextMonth` adds and clamps.** It returns `buffered + amount`,
+  clamped to what is available, yet reports `true` whenever `to-budget > 0` — so
+  a partial hold is indistinguishable from a full one, and two calls compound.
+  The repo reads the resulting buffer back and reports `heldAmount`.
+- **`setCategoryCarryover` is not scoped to one month.** It applies the flag to
+  every month from the given one to the end of the budget range. Stated in the
+  tool description rather than left invisible.
+- **`budget-set-amount` validates nothing.** No month check and no category
+  check, so a bad month leaves a junk row behind before failing on read-back,
+  and an income category accepts the write and discards it. Both are rejected
+  before writing.
+- **`bank-sync` only errors for accounts it attempted.** Unknown, closed, and
+  unlinked accounts are skipped silently, so the handler returning cleanly did
+  not mean anything synced. Eligibility is checked against `account_id` — the
+  field the handler itself requires — before claiming success.
 - **`api/transaction-update` does not await its own write.** It ends with
   `return handlers['transactions-batch-update'](diff)['updated']` — indexing the
   promise rather than awaiting it — so the write is still in flight when

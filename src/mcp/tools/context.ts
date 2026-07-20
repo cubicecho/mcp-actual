@@ -101,6 +101,7 @@ export function contextTools(repos: Pick<ActualRepos, 'context' | 'budgets'>): T
         note: z.string().describe('The full note text. Replaces any existing note.'),
       },
       write: true,
+      destructive: true,
       idempotent: true,
       run: async (args) => {
         const { id, note } = z.object({ id: idSchema, note: z.string() }).parse(args);
@@ -113,15 +114,18 @@ export function contextTools(repos: Pick<ActualRepos, 'context' | 'budgets'>): T
       title: 'Fetch transactions from linked banks',
       description:
         'Trigger Actual’s bank sync to pull new transactions from linked accounts, optionally for one account. ' +
-        'Slow and rate-limited by the bank, so call it deliberately rather than before every read.',
+        'Slow and rate-limited by the bank, so call it deliberately rather than before every read. Fails rather ' +
+        'than reporting a hollow success when the account does not exist, is closed, or has no bank link. ' +
+        'Returns the accounts it actually synced — Actual does not report how many transactions arrived, so ' +
+        'follow up with `search_transactions` rather than claiming a count.',
       inputSchema: {
         accountId: idSchema.optional().describe('Sync only this account. Omit to sync every linked account.'),
       },
       write: true,
+      destructive: true,
       run: async (args) => {
         const { accountId } = z.object({ accountId: idSchema.optional() }).parse(args);
-        await repos.context.runBankSync(accountId);
-        return { synced: true, accountId: accountId ?? null };
+        return repos.context.runBankSync(accountId);
       },
     }),
   ] as ToolDefinition[];

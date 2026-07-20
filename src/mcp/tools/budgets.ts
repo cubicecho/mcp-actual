@@ -58,6 +58,7 @@ export function budgetTools(repos: Pick<ActualRepos, 'budgets'>): ToolDefinition
         amount: centsSchema.describe('Amount to budget, in cents. Replaces the current amount.'),
       },
       write: true,
+      destructive: true,
       idempotent: true,
       run: async (args) => {
         const { month, categoryId, amount } = z
@@ -71,14 +72,19 @@ export function budgetTools(repos: Pick<ActualRepos, 'budgets'>): ToolDefinition
       name: 'set_budget_carryover',
       title: 'Set a category’s carryover',
       description:
-        'Turn rollover on or off for one category in one month. With carryover on, an unspent balance rolls ' +
-        'into the next month instead of returning to "to budget"; an overspend carries forward as a negative.',
+        'Turn rollover on or off for a category. With carryover on, an unspent balance rolls into the next ' +
+        'month instead of returning to "to budget"; an overspend carries forward as a negative.\n' +
+        'IMPORTANT: this is not scoped to the one month. Actual applies the flag from the given month FORWARD ' +
+        'to the end of the budget range, overwriting it on every later month — including ones set deliberately. ' +
+        'The result reports only the month you named, so say what you changed rather than implying it was one ' +
+        'month.',
       inputSchema: {
         month: monthSchema.describe('Month to change, as YYYY-MM.'),
         categoryId: idSchema.describe('Category id, from list_categories.'),
         carryover: z.boolean().describe('True to roll the balance forward, false to stop rolling it forward.'),
       },
       write: true,
+      destructive: true,
       idempotent: true,
       run: async (args) => {
         const { month, categoryId, carryover } = z
@@ -92,18 +98,22 @@ export function budgetTools(repos: Pick<ActualRepos, 'budgets'>): ToolDefinition
       name: 'hold_for_next_month',
       title: 'Hold funds for next month',
       description:
-        'Hold some of this month’s leftover "to budget" money back for next month, in integer cents. Returns ' +
-        '`{ held: false }` when there is not enough available to hold. Each call replaces the previous hold ' +
-        'for that month rather than adding to it.',
+        'Hold some of this month’s leftover "to budget" money back for next month, in integer cents.\n' +
+        'This ADDS to whatever is already held for that month — it does not replace it, so calling twice with ' +
+        '1000 leaves 2000 held. To correct a hold, call `reset_budget_hold` first.\n' +
+        'The amount is clamped to what is actually available, so the hold can be smaller than you asked for. ' +
+        'Read `heldAmount` (how much the buffer really grew) and `forNextMonth` (the resulting total) rather ' +
+        'than assuming the request landed in full; `held: false` means there was no surplus to hold at all.',
       inputSchema: {
         month: monthSchema.describe('Month whose surplus to hold, as YYYY-MM.'),
         amount: centsSchema.positive().describe('Amount to hold back, in cents.'),
       },
       write: true,
+      destructive: true,
       idempotent: true,
       run: async (args) => {
         const { month, amount } = z.object({ month: monthSchema, amount: centsSchema.positive() }).parse(args);
-        return { held: await repos.budgets.holdForNextMonth(month, amount) };
+        return repos.budgets.holdForNextMonth(month, amount);
       },
     }),
 
@@ -111,17 +121,17 @@ export function budgetTools(repos: Pick<ActualRepos, 'budgets'>): ToolDefinition
       name: 'reset_budget_hold',
       title: 'Release a held amount',
       description:
-        'Release any amount held back for next month, returning it to this month’s "to budget". Safe to call ' +
-        'when nothing is held.',
+        'Release everything held back for next month, returning it to this month’s "to budget". Safe to call ' +
+        'when nothing is held. Returns the resulting `forNextMonth`, which should be 0.',
       inputSchema: {
         month: monthSchema.describe('Month whose hold to release, as YYYY-MM.'),
       },
       write: true,
+      destructive: true,
       idempotent: true,
       run: async (args) => {
         const { month } = z.object({ month: monthSchema }).parse(args);
-        await repos.budgets.resetHold(month);
-        return { reset: true, month };
+        return { month, ...(await repos.budgets.resetHold(month)) };
       },
     }),
 
@@ -172,6 +182,7 @@ export function budgetTools(repos: Pick<ActualRepos, 'budgets'>): ToolDefinition
         hidden: z.boolean().optional().describe('Hide or unhide the group and everything in it.'),
       },
       write: true,
+      destructive: true,
       idempotent: true,
       run: async (args) => {
         const { id, ...fields } = z
@@ -225,6 +236,7 @@ export function budgetTools(repos: Pick<ActualRepos, 'budgets'>): ToolDefinition
         hidden: z.boolean().optional().describe('Hide or unhide the category.'),
       },
       write: true,
+      destructive: true,
       idempotent: true,
       run: async (args) => {
         const { id, ...fields } = z

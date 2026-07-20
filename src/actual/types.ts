@@ -202,7 +202,14 @@ export interface Schedule {
   name?: string;
   accountId?: string;
   payeeId?: string;
+  /** Integer cents. Absent when the schedule matches an amount *range* — see below. */
   amount?: number;
+  amountDecimal?: number;
+  /** How `amount` is matched: "is", "isapprox", "isbetween", … */
+  amountOp?: string;
+  /** Range bounds, in cents, present instead of `amount` when `amountOp` is "isbetween". */
+  amountMin?: number;
+  amountMax?: number;
   nextDate?: string;
   completed: boolean;
   posts_transaction: boolean;

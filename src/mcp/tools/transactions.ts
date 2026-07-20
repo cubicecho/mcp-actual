@@ -131,6 +131,7 @@ export function transactionTools(repos: Pick<ActualRepos, 'transactions'>): Tool
         amount: centsSchema.optional().describe('New amount in cents; negative is an outflow.'),
       },
       write: true,
+      destructive: true,
       idempotent: true,
       run: async (args) => {
         const { id, ...fields } = updateSchema.parse(args);

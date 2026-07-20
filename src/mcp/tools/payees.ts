@@ -30,11 +30,15 @@ export function payeeTools(repos: Pick<ActualRepos, 'payees'>): ToolDefinition[]
       name: 'find_duplicate_payees',
       title: 'Find likely duplicate payees',
       description:
-        'Group payees whose names normalize to the same key — `AMZN Mktp US*2H4` and `Amazon Mktp US`, for ' +
-        'example — so near-duplicates can be reviewed instead of scanned for by hand. Each group names a ' +
-        '`suggestedTarget` (the most-used member) and the other `candidates`, plus the `reason` they were ' +
-        'grouped. This only suggests: nothing is merged, and the grouping is a heuristic, so confirm a group ' +
-        'really is one merchant before calling `merge_payees`. Transfer payees are never included.',
+        'Group payees whose names differ only by case, punctuation, or a trailing store/reference number — ' +
+        '`Trader Joe’s #123` and `TRADER JOES 456`, for example. Each group names a `suggestedTarget` (the ' +
+        'most-used member) and the other `candidates`, plus the `reason` they were grouped.\n' +
+        'Matching is exact once normalized, so an abbreviation and its expansion do NOT group: `AMZN Mktp ' +
+        'US*2H4` and `Amazon` are reported separately. An empty result therefore means "no name-shaped ' +
+        'duplicates", not "no duplicates" — to find those, scan `list_payees` yourself and propose them to ' +
+        'the user. The conservative rule is deliberate: a false positive here feeds an irreversible merge.\n' +
+        'This only suggests; nothing is merged. Confirm a group really is one merchant before calling ' +
+        '`merge_payees`. Transfer payees are never included.',
       inputSchema: {
         minGroupSize: z
           .number()
@@ -78,6 +82,7 @@ export function payeeTools(repos: Pick<ActualRepos, 'payees'>): ToolDefinition[]
         name: z.string().min(1).describe('The new name.'),
       },
       write: true,
+      destructive: true,
       idempotent: true,
       run: async (args) => {
         const { id, name } = z.object({ id: idSchema, name: z.string().min(1) }).parse(args);
@@ -101,6 +106,7 @@ export function payeeTools(repos: Pick<ActualRepos, 'payees'>): ToolDefinition[]
           .describe('Ids of the payees to merge into the target. They will no longer exist afterwards.'),
       },
       write: true,
+      destructive: true,
       run: async (args) => {
         const { targetId, mergeIds } = z.object({ targetId: idSchema, mergeIds: z.array(idSchema).min(1) }).parse(args);
         if (mergeIds.includes(targetId)) {

@@ -4,10 +4,14 @@ import type { Payee } from './types.ts';
 
 const getPayees = vi.fn();
 const mergePayees = vi.fn();
+const updatePayee = vi.fn();
+const createPayee = vi.fn();
 
 vi.mock('@actual-app/api', () => ({
   getPayees: () => getPayees(),
   mergePayees: (...args: unknown[]) => mergePayees(...args),
+  updatePayee: (...args: unknown[]) => updatePayee(...args),
+  createPayee: (...args: unknown[]) => createPayee(...args),
 }));
 
 function payee(id: string, name: string, transactionCount = 0, transferAccountId?: string): Payee {
@@ -120,5 +124,35 @@ describe('merge guards', () => {
   it('refuses an id that does not exist rather than silently merging the rest', async () => {
     await expect(repo.merge('p-1', ['p-nope'])).rejects.toThrow(/No payee with id "p-nope"/);
     expect(mergePayees).not.toHaveBeenCalled();
+  });
+});
+
+describe('write guards', () => {
+  const repo = createPayeesRepo({
+    read: (fn: () => Promise<unknown>) => fn(),
+    run: (fn: () => Promise<unknown>) => fn(),
+  } as Parameters<typeof createPayeesRepo>[0]);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getPayees.mockResolvedValue([{ id: 'p-1', name: 'Amazon' }]);
+  });
+
+  it('renames an existing payee', async () => {
+    await repo.update('p-1', { name: 'Amazon.com' });
+    expect(updatePayee).toHaveBeenCalledWith('p-1', { name: 'Amazon.com' });
+  });
+
+  it('refuses to rename an unknown id, which would CREATE a broken payee', async () => {
+    // Actual's db.update is CRDT message-based and INSERTs when the row is
+    // absent — without the payee_mapping row a real payee gets, so the orphan
+    // can never be associated with a transaction.
+    await expect(repo.update('p-nope', { name: 'Amazon.com' })).rejects.toThrow('No payee with id "p-nope"');
+    expect(updatePayee).not.toHaveBeenCalled();
+  });
+
+  it('refuses to create a payee whose name already exists', async () => {
+    await expect(repo.create('Amazon')).rejects.toThrow(/already exists/);
+    expect(createPayee).not.toHaveBeenCalled();
   });
 });

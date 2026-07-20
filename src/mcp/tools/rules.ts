@@ -282,6 +282,7 @@ export function ruleTools(repos: Pick<ActualRepos, 'rules'>): ToolDefinition[] {
         stage: z.enum(['pre', 'post']).nullable().optional().describe('Defaults to null, the normal stage.'),
       },
       write: true,
+      destructive: true,
       idempotent: true,
       run: async (args) => {
         const { id, ...body } = ruleBodySchema.extend({ id: idSchema }).parse(args);
@@ -346,6 +347,7 @@ export function ruleTools(repos: Pick<ActualRepos, 'rules'>): ToolDefinition[] {
         actions: z.array(actionSchema).min(1).describe('Actions to apply. Same format as create_rule.'),
       },
       write: true,
+      destructive: true,
       run: async (args) => {
         const { transactionIds, actions } = z
           .object({

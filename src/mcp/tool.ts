@@ -22,6 +22,14 @@ export interface ToolDefinition<Args extends ZodRawShape = ZodRawShape> {
    * idempotent.
    */
   idempotent?: boolean;
+  /**
+   * Set when the tool overwrites or removes existing data, as opposed to only
+   * adding to it. This is **not** the inverse of {@link idempotent}: replacing
+   * a note wholesale is idempotent *and* destructive, while creating a payee is
+   * neither. MCP clients may auto-approve non-destructive tools, so deriving
+   * this from idempotency would wave through every in-place overwrite.
+   */
+  destructive?: boolean;
   /** Returns the value to serialize as the tool result. Throwing yields a tool error, not a transport error. */
   run: (args: Record<string, unknown>) => Promise<unknown>;
 }

@@ -35,6 +35,8 @@ export class ActualClient {
   private shuttingDown = false;
   /** `init`'s return value, kept for {@link send}. Null until the budget is open. */
   private lib: ActualLib | null = null;
+  /** Memoized shutdown, so concurrent `close` calls await one teardown. */
+  private closing: Promise<void> | null = null;
 
   constructor(config: Config) {
     this.config = config;
@@ -94,9 +96,14 @@ export class ActualClient {
 
   /** Close the budget and release the API's resources. Safe to call more than once. */
   async close(): Promise<void> {
-    if (this.shuttingDown) {
-      return;
-    }
+    // Memoized, not short-circuited: a second caller must *await* the first
+    // shutdown rather than resolve immediately. Returning early let a second
+    // signal run `process.exit(0)` while the budget was still being closed.
+    this.closing ??= this.doClose();
+    return this.closing;
+  }
+
+  private async doClose(): Promise<void> {
     this.shuttingDown = true;
     // Drain the queue first so we never shut the API down mid-operation.
     await this.queue.catch(() => {});
@@ -126,7 +133,15 @@ export class ActualClient {
     const { dataDir, serverUrl, password, syncId, encryptionPassword } = this.config;
     await mkdir(dataDir, { recursive: true });
     try {
-      this.lib = await api.init({ dataDir, serverURL: serverUrl, password });
+      // `verbose: false` is load-bearing, not tidiness. loot-core's logger
+      // defaults to verbose, `logger.log`/`logger.info` write to **stdout**,
+      // and a failed login logs the whole request body — which contains the
+      // password — as "API call failed: ... Data: { "password": ... }". The
+      // same logger narrates every sync, which on stdio would interleave
+      // non-JSON lines into the JSON-RPC stream that stdout *is*. Warnings and
+      // errors are not gated by this flag and go to stderr, so nothing
+      // diagnostic is lost.
+      this.lib = await api.init({ dataDir, serverURL: serverUrl, password, verbose: false });
     } catch (cause) {
       throw new Error(`Failed to connect to the Actual server at ${serverUrl}: ${errorChainMessage(cause)}`, { cause });
     }

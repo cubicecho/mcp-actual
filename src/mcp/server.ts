@@ -79,9 +79,11 @@ export function createActualServer(deps: ActualServerDeps): McpServer {
         ...(hasInputs ? { inputSchema: tool.inputSchema } : {}),
         annotations: {
           readOnlyHint: !tool.write,
-          // Reads never destroy anything; a write is destructive unless it is
-          // idempotent (re-applying it lands on the same state).
-          destructiveHint: Boolean(tool.write) && !tool.idempotent,
+          // Declared per tool, not derived from idempotency: MCP defines
+          // destructive as "may overwrite or remove" versus "only adds", which
+          // is orthogonal. `update_note` is idempotent and destructive;
+          // `create_payee` is neither.
+          destructiveHint: Boolean(tool.write) && Boolean(tool.destructive),
           idempotentHint: !tool.write || Boolean(tool.idempotent),
           // Every tool talks to an external Actual server.
           openWorldHint: true,
