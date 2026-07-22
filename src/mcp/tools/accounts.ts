@@ -10,7 +10,10 @@ export function accountTools(repos: Pick<ActualRepos, 'accounts'>): ToolDefiniti
         'List every account in the Actual Budget file with its current balance. Returns each account’s id, ' +
         'name, balance (in cents as `amount` and as a decimal in `amountDecimal`), whether it is off-budget (a ' +
         'tracking account), and whether it is closed — plus `onBudgetTotal` (open on-budget accounts) and ' +
-        '`total` (all open accounts). The budget is synced with the server before reading, so balances are current.',
+        '`total` (all open accounts). The budget is synced with the server before reading.\n' +
+        'Balances are as of TODAY: a future-dated transaction, such as a posted schedule, is not counted, so ' +
+        'these figures can be lower than the ones Actual’s own account screen shows. Mention that if a balance ' +
+        'looks off rather than assuming the budget is wrong.',
       inputSchema: {},
       run: () => repos.accounts.listWithBalances(),
     }),

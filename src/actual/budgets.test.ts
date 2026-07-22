@@ -1,12 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createBudgetsRepo, mapCategories, mapCategoryGroups } from './budgets.ts';
+import { createBudgetsRepo, mapCategories, mapCategoryGroups, toBudgetCategory } from './budgets.ts';
 
 const updateCategoryGroup = vi.fn(async () => undefined);
+const updateCategory = vi.fn(async () => undefined);
+const getCategories = vi.fn(async () => [
+  { id: 'c-1', name: 'Groceries', group_id: 'g-1', hidden: false, is_income: false },
+]);
 const getCategoryGroups = vi.fn(async () => [{ id: 'g-2', name: 'Retired', is_income: false, hidden: false }]);
 
 vi.mock('@actual-app/api', () => ({
   getCategoryGroups: (...args: unknown[]) => getCategoryGroups(...(args as [])),
   updateCategoryGroup: (...args: unknown[]) => updateCategoryGroup(...(args as [])),
+  updateCategory: (...args: unknown[]) => updateCategory(...(args as [])),
+  getCategories: (...args: unknown[]) => getCategories(...(args as [])),
 }));
 
 const GROUPS = [
@@ -76,6 +82,53 @@ describe('updateCategoryGroup', () => {
   it('fails with a readable message for an unknown id', async () => {
     await expect(repo.updateCategoryGroup('nope', { hidden: true })).rejects.toThrow(
       'No category group with id "nope"',
+    );
+  });
+});
+
+describe('toBudgetCategory', () => {
+  it('reads budgeted/spent/balance for an ordinary category', () => {
+    const mapped = toBudgetCategory({ id: 'c-1', name: 'Groceries', budgeted: 40000, spent: -12500, balance: 27500 });
+    expect(mapped).toMatchObject({ isIncome: false, budgeted: 40000, spent: -12500, balance: 27500 });
+    expect(mapped?.received).toBeUndefined();
+  });
+
+  it('reads `received` for an income category, which has no spent at all', () => {
+    // Actual emits income categories with only `received` on an envelope
+    // budget; reading `spent` off one reports a real salary as 0.
+    const mapped = toBudgetCategory({ id: 'c-2', name: 'Salary', received: 500000 }, 'Income', true);
+    expect(mapped).toMatchObject({ isIncome: true, received: 500000 });
+    expect(mapped?.spent).toBe(0);
+  });
+
+  it('drops an entry with no id rather than inventing one', () => {
+    expect(toBudgetCategory({ name: 'Orphan' })).toBeNull();
+  });
+});
+
+describe('updateCategory', () => {
+  const repo = createBudgetsRepo({
+    read: (fn: () => Promise<unknown>) => fn(),
+    run: (fn: () => Promise<unknown>) => fn(),
+  } as Parameters<typeof createBudgetsRepo>[0]);
+
+  it('resends the current name on a hidden-only change', async () => {
+    // `updateCategory` does `category.name.trim()` unconditionally, so a patch
+    // without a name throws a TypeError from inside the library — the same trap
+    // already worked around for category groups.
+    await repo.updateCategory('c-1', { hidden: true });
+    expect(updateCategory).toHaveBeenCalledWith('c-1', { name: 'Groceries', hidden: true });
+  });
+
+  it('refuses an unknown category rather than writing blind', async () => {
+    await expect(repo.updateCategory('nope', { hidden: true })).rejects.toThrow('No category with id "nope"');
+  });
+
+  it('refuses a move into a group that does not exist', async () => {
+    // `cat_group` has no foreign key, so a bad id would strand the category
+    // where no listing can reach it.
+    await expect(repo.updateCategory('c-1', { groupId: 'g-nope' })).rejects.toThrow(
+      'No category group with id "g-nope"',
     );
   });
 });

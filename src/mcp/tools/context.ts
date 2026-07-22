@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { ResolvableType } from '../../actual/context.ts';
 import type { ActualRepos } from '../../actual/index.ts';
 import { defineTool, type ToolDefinition } from '../tool.ts';
+import { idSchema } from './ids.ts';
 
 const RESOLVABLE_TYPES = ['accounts', 'categories', 'payees', 'schedules'] as const;
 
@@ -67,10 +68,10 @@ export function contextTools(repos: Pick<ActualRepos, 'context' | 'budgets'>): T
         'Read the note attached to an entity (transaction, account, category, …) by its id. Returns ' +
         '`{ note: null }` when there is none.',
       inputSchema: {
-        id: z.string().min(1).describe('Id of the entity whose note to read.'),
+        id: idSchema.describe('Id of the entity whose note to read.'),
       },
       run: async (args) => {
-        const { id } = z.object({ id: z.string().min(1) }).parse(args);
+        const { id } = z.object({ id: idSchema }).parse(args);
         return { note: await repos.context.getNote(id) };
       },
     }),
@@ -96,13 +97,14 @@ export function contextTools(repos: Pick<ActualRepos, 'context' | 'budgets'>): T
         'Replace the note attached to an entity by its id. Notes are free text and overwrite wholesale — read ' +
         'the existing note first with `get_note` if you mean to append to it.',
       inputSchema: {
-        id: z.string().min(1).describe('Id of the entity to annotate.'),
+        id: idSchema.describe('Id of the entity to annotate.'),
         note: z.string().describe('The full note text. Replaces any existing note.'),
       },
       write: true,
+      destructive: true,
       idempotent: true,
       run: async (args) => {
-        const { id, note } = z.object({ id: z.string().min(1), note: z.string() }).parse(args);
+        const { id, note } = z.object({ id: idSchema, note: z.string() }).parse(args);
         return { note: await repos.context.updateNote(id, note) };
       },
     }),
@@ -112,15 +114,18 @@ export function contextTools(repos: Pick<ActualRepos, 'context' | 'budgets'>): T
       title: 'Fetch transactions from linked banks',
       description:
         'Trigger Actual’s bank sync to pull new transactions from linked accounts, optionally for one account. ' +
-        'Slow and rate-limited by the bank, so call it deliberately rather than before every read.',
+        'Slow and rate-limited by the bank, so call it deliberately rather than before every read. Fails rather ' +
+        'than reporting a hollow success when the account does not exist, is closed, or has no bank link. ' +
+        'Returns the accounts it actually synced — Actual does not report how many transactions arrived, so ' +
+        'follow up with `search_transactions` rather than claiming a count.',
       inputSchema: {
-        accountId: z.string().min(1).optional().describe('Sync only this account. Omit to sync every linked account.'),
+        accountId: idSchema.optional().describe('Sync only this account. Omit to sync every linked account.'),
       },
       write: true,
+      destructive: true,
       run: async (args) => {
-        const { accountId } = z.object({ accountId: z.string().min(1).optional() }).parse(args);
-        await repos.context.runBankSync(accountId);
-        return { synced: true, accountId: accountId ?? null };
+        const { accountId } = z.object({ accountId: idSchema.optional() }).parse(args);
+        return repos.context.runBankSync(accountId);
       },
     }),
   ] as ToolDefinition[];

@@ -77,6 +77,89 @@ The second half of the objection still stands, and shapes both tools:
 The handler returns `null` when it cannot parse an action; that is surfaced as a
 tool error, because a silent no-op reads as success.
 
+Behaviours of the library that shape these tools, each verified in the bundled
+source rather than inferred from its types:
+
+- **Ids are interpolated into SQL unescaped.** AQL's `$oneof` emits
+  ``ids.map((id) => `'${String(id)}'`)`` and `val()` escapes quotes only for
+  `string`-typed fields, never `id`-typed ones. An id containing a quote breaks
+  out of the `IN (...)` list, so `x') OR 1=1 --` turns a targeted lookup into a
+  whole-table match that `apply_rule_actions` would then write to. `idSchema`
+  constrains every id at the tool boundary, and `applyActions` additionally
+  refuses to proceed when the lookup returns rows it did not ask for.
+- **Split parents are unreachable.** AQL defaults to `splits: 'inline'`, whose
+  executor appends `AND is_parent = 0`. Parents never appear in any query here,
+  so a split is addressable only leg by leg, and `isParent` is always false.
+- **"Uncategorized" is not just a null category.** Actual's own
+  `conditionSpecialCases` expands `category is null` to *and not a transfer, and
+  not a split parent*, because both legs of a transfer carry a null category.
+  `buildSearchFilter` mirrors that, or cleanup would invite an agent to
+  categorize transfers.
+- **`batchUpdateTransactions` reports transfer bookkeeping, not writes.** Its
+  `updated` field is `transfersUpdated` when `runTransfers` is on (the default),
+  which is empty for an ordinary categorization. `applyActions` therefore
+  confirms by reading the rows back instead of echoing that field.
+- **loot-core's logger defaults to verbose and writes to stdout.** A failed
+  login logs the whole request body — including `ACTUAL_PASSWORD` — via
+  `logger.log` → `console.log`, and the same logger narrates every sync, which
+  on stdio would interleave non-JSON lines into the JSON-RPC stream. `init` is
+  therefore called with `verbose: false`; warnings and errors are not gated by
+  the flag and go to stderr, so nothing diagnostic is lost.
+- **`db.update` inserts when the row is absent.** It is CRDT message-based, and
+  `applyMessages` chooses INSERT vs UPDATE purely on whether the row exists. So
+  "updating" an unknown id *creates* the entity — and for payees, without the
+  `payee_mapping` row that `insertPayee` adds, so it can never be associated
+  with a transaction. Every update path checks existence first.
+- **`schedules-get` renames its fields.** `scheduleModel.toExternal` maps
+  `_payee`/`_account`/`_amount` to `payee`/`account`/`amount`; reading the
+  underscored names off the result silently yields undefined for all of them.
+  `amount` is `{num1, num2}` rather than a number when `amountOp` is
+  `isbetween`.
+- **`updateCategory` calls `category.name.trim()` unconditionally**, exactly
+  like `updateCategoryGroup`, so a hidden-only or move-only patch throws a
+  `TypeError` from inside the library. Both resend the current name.
+- **`holdBudgetForNextMonth` adds and clamps.** It returns `buffered + amount`,
+  clamped to what is available, yet reports `true` whenever `to-budget > 0` — so
+  a partial hold is indistinguishable from a full one, and two calls compound.
+  The repo reads the resulting buffer back and reports `heldAmount`.
+- **`setCategoryCarryover` is not scoped to one month.** It applies the flag to
+  every month from the given one to the end of the budget range. Stated in the
+  tool description rather than left invisible.
+- **`budget-set-amount` validates nothing.** No month check and no category
+  check, so a bad month leaves a junk row behind before failing on read-back,
+  and an income category accepts the write and discards it. Both are rejected
+  before writing.
+- **`bank-sync` only errors for accounts it attempted.** Unknown, closed, and
+  unlinked accounts are skipped silently, so the handler returning cleanly did
+  not mean anything synced. Eligibility is checked against `account_id` — the
+  field the handler itself requires — before claiming success.
+- **`api/transaction-update` does not await its own write.** It ends with
+  `return handlers['transactions-batch-update'](diff)['updated']` — indexing the
+  promise rather than awaiting it — so the write is still in flight when
+  `updateTransaction` resolves, and an immediate read-back can return the *old*
+  row. `update` therefore polls until a field it changed actually moves, instead
+  of trusting the ordering.
+- **`getTransactions` returns splits grouped.** `api/transactions-get` queries
+  with `splits: 'grouped'`, so a split arrives as one parent carrying its legs
+  in `subtransactions`; the legs are not rows. `listForAccount` flattens parent
+  and legs, or every leg — and the categories that make a split meaningful —
+  would silently vanish from the "exhaustive" per-account read.
+- **Income categories report `received`, not `spent`.** `api/budget-month`
+  branches on `group.is_income`, and on the default envelope budget an income
+  category carries *only* `received`. Reading `spent` off one reports a real
+  salary as 0, so `BudgetCategory` carries `isIncome` and `received`.
+- **Account balances are as of today.** `api/account-balance` defaults `cutoff`
+  to `new Date()` and filters `date <= cutoff`, while Actual's own account
+  screen sums without a date bound. Future-dated transactions are therefore
+  excluded here. Kept ("current" means today) but stated in the tool
+  description, so the two are not silently inconsistent.
+- **Previewing can insert payees.** `runRules` ends in
+  `finalizeTransactionForRules`, which calls `insertPayee` for a `set payee_name`
+  action naming a payee that does not exist. Nothing else is written and no
+  transaction is touched, but this means `preview_rule_effects` is not perfectly
+  side-effect-free; it reports the rules capable of it in `createsPayees` rather
+  than hiding it.
+
 Each previewed change carries **both** the display name and the raw id
 (`from`/`to` plus `fromId`/`toId`). Names alone were unusable — actions take ids
 as values, so a name-only diff forced an ambiguous `resolve_name_to_id`
@@ -164,6 +247,34 @@ every update to avoid a `TypeError` thrown from inside the library.
 
 \* `sync_budget` mutates nothing locally that the user did not already cause —
 it pulls the server's state. Treated as a read.
+
+## Operational decisions
+
+- **Auth fails closed.** The server refuses to start without `MCP_ACTUAL_TOKEN`
+  unless `SECURE_LOCAL_NET=true` states that an unauthenticated server is
+  intended. An unset variable is indistinguishable from a misspelled one, so
+  starting-and-warning turned one typo into an open, writable server over
+  someone's finances. Read-only deployments are held to the same rule — the data
+  is exposed either way.
+- **Every operation has a deadline** (`ACTUAL_TIMEOUT_MS`, default 120s). Calls
+  are serialized through one queue, so an unbounded hang stalls the whole server
+  rather than one request. On timeout the *caller* is rejected but the queue
+  keeps waiting for the real operation: `@actual-app/api` takes no `AbortSignal`,
+  so a timed-out call is still running against the shared budget and starting
+  the next one would break the serialization the client exists to provide.
+  Meanwhile the client is marked stalled and later calls fail immediately
+  instead of queueing invisibly, recovering by itself if the operation settles.
+  `run_bank_sync` passes its own 10-minute deadline: it is legitimately slow,
+  and the general timeout exists to catch hangs, not slowness.
+- **`@actual-app/api` is pinned exactly**, not caret-ranged. The behaviours
+  documented above are internal — handler names, split modes, field renames,
+  which fields a model's `toExternal` emits — and a minor release can change any
+  of them silently. Re-run this audit when bumping it.
+- **A read tool that can write is refused, not tolerated.**
+  `preview_rule_effects` is read-only except that Actual's engine inserts a
+  payee for a `set payee_name` rule. With `ACTUAL_ENABLE_WRITES=false` the
+  operator has said this server may not change the budget, so the preview
+  refuses with the offending rule ids rather than writing behind the gate.
 
 ## Prompts
 

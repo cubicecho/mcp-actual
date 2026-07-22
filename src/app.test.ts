@@ -19,6 +19,7 @@ const baseConfig: Config = {
   port: 3000,
   authToken: null,
   enableWrites: true,
+  timeoutMs: 120_000,
 };
 
 function app(config: Partial<Config> = {}) {

@@ -118,11 +118,14 @@ describe('createActualServer', () => {
             payeeName: 'AMZN Mktp US*2H4',
             amount: -2500,
             amountDecimal: -25,
+            isParent: false,
+            isChild: false,
             changes: { category: { from: null, to: 'Shopping' } },
           },
         ],
         scanned: 40,
         truncated: false,
+        createsPayees: [],
       };
       const client = await connect(
         stubRepos({
@@ -144,6 +147,45 @@ describe('createActualServer', () => {
       expect(seen).toEqual({ uncategorized: true, dateFrom: '2026-01-01', limit: 100 });
     });
 
+    it('tells the repo whether payee creation is permitted, per the write gate', async () => {
+      // Previewing runs Actual's engine, which inserts a payee for a
+      // `set payee_name` rule — a write. With writes off the repo must refuse
+      // rather than perform it behind the gate's back.
+      const seen: unknown[] = [];
+      const preview = { entries: [], scanned: 0, truncated: false, createsPayees: [] };
+      for (const enableWrites of [true, false]) {
+        const client = await connect(
+          stubRepos({
+            rules: {
+              previewEffects: async (_filters, options) => {
+                seen.push(options);
+                return preview;
+              },
+            },
+          }),
+          enableWrites,
+        );
+        await client.callTool({ name: 'preview_rule_effects', arguments: {} });
+      }
+      expect(seen).toEqual([{ allowPayeeCreation: true }, { allowPayeeCreation: false }]);
+    });
+
+    it('surfaces the repo refusal as a readable tool error', async () => {
+      const client = await connect(
+        stubRepos({
+          rules: {
+            previewEffects: async () => {
+              throw new Error('Cannot preview: 1 rule(s) set `payee_name`');
+            },
+          },
+        }),
+        false,
+      );
+      const result = await client.callTool({ name: 'preview_rule_effects', arguments: {} });
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toMatch(/payee_name/);
+    });
+
     it('is advertised as a read tool, so it survives the write gate', async () => {
       const { tools } = await (await connect(stubRepos(), false)).listTools();
       const names = tools.map((tool) => tool.name);
@@ -158,7 +200,7 @@ describe('createActualServer', () => {
           rules: {
             applyActions: async (transactionIds, actions) => {
               seen = { transactionIds, actions };
-              return { updated: ['t-1'], missing: ['t-9'], errors: [] };
+              return { applied: ['t-1'], missing: ['t-9'], deleted: [], errors: [] };
             },
           },
         }),
@@ -171,11 +213,32 @@ describe('createActualServer', () => {
         },
       });
       expect(result.isError).toBeFalsy();
-      expect(JSON.parse(textOf(result))).toEqual({ updated: ['t-1'], missing: ['t-9'], errors: [] });
+      expect(JSON.parse(textOf(result))).toEqual({
+        applied: ['t-1'],
+        missing: ['t-9'],
+        deleted: [],
+        errors: [],
+      });
       expect(seen).toEqual({
         transactionIds: ['t-1', 't-9'],
         actions: [{ op: 'set', field: 'category', value: 'c-1' }],
       });
+    });
+
+    it('refuses an id that could widen the query beyond the ids given', async () => {
+      // AQL interpolates id values into SQL unescaped, so `x') OR 1=1 --` would
+      // turn this bulk write into one matching every transaction in the budget.
+      const client = await connect(
+        stubRepos({ rules: { applyActions: async () => ({ applied: [], missing: [], deleted: [], errors: [] }) } }),
+      );
+      const result = await client.callTool({
+        name: 'apply_rule_actions',
+        arguments: {
+          transactionIds: ["x') OR 1=1 --"],
+          actions: [{ op: 'set', field: 'category', value: 'c-1' }],
+        },
+      });
+      expect(result.isError).toBe(true);
     });
 
     it('refuses a bulk apply larger than the cap', async () => {
@@ -197,6 +260,57 @@ describe('createActualServer', () => {
         arguments: { transactionIds: ['t-1'], actions: [{ op: 'drop-table', value: 'x' }] },
       });
       expect(result.isError).toBe(true);
+    });
+
+    it('accepts delete-transaction, the op Actual actually defines, and rejects bare delete', async () => {
+      // Actual's Action constructor asserts membership of ACTION_OPS, so `delete`
+      // throws from inside the library — it must not reach it.
+      let seen: unknown;
+      const client = await connect(
+        stubRepos({
+          rules: {
+            applyActions: async (_ids, actions) => {
+              seen = actions;
+              return { applied: ['t-1'], missing: [], deleted: [], errors: [] };
+            },
+          },
+        }),
+      );
+      const ok = await client.callTool({
+        name: 'apply_rule_actions',
+        arguments: { transactionIds: ['t-1'], actions: [{ op: 'delete-transaction', value: '' }] },
+      });
+      expect(ok.isError).toBeFalsy();
+      expect(seen).toEqual([{ op: 'delete-transaction', value: '' }]);
+
+      const bad = await client.callTool({
+        name: 'apply_rule_actions',
+        arguments: { transactionIds: ['t-1'], actions: [{ op: 'delete', value: '' }] },
+      });
+      expect(bad.isError).toBe(true);
+    });
+
+    it('documents delete-transaction rather than delete in the rule schema', async () => {
+      const client = await connect(stubRepos());
+      const doc = JSON.parse(textOf(await client.callTool({ name: 'describe_rule_schema', arguments: {} })));
+      expect(Object.keys(doc.actionOps)).toContain('delete-transaction');
+      expect(Object.keys(doc.actionOps)).not.toContain('delete');
+    });
+
+    it('passes paging through to the preview', async () => {
+      let seen: unknown;
+      const client = await connect(
+        stubRepos({
+          rules: {
+            previewEffects: async (filters) => {
+              seen = filters;
+              return { entries: [], scanned: 0, truncated: false, createsPayees: [] };
+            },
+          },
+        }),
+      );
+      await client.callTool({ name: 'preview_rule_effects', arguments: { limit: 50, offset: 100 } });
+      expect(seen).toMatchObject({ limit: 50, offset: 100 });
     });
   });
 
@@ -323,10 +437,33 @@ describe('createActualServer', () => {
       const byName = new Map(tools.map((t) => [t.name, t]));
       expect(byName.get('list_accounts')?.annotations?.readOnlyHint).toBe(true);
       expect(byName.get('merge_payees')?.annotations?.readOnlyHint).toBe(false);
-      // A merge cannot be re-applied to the same state, so it is destructive.
-      expect(byName.get('merge_payees')?.annotations?.destructiveHint).toBe(true);
-      // Setting a budget amount twice lands on the same state.
-      expect(byName.get('set_budget_amount')?.annotations?.destructiveHint).toBe(false);
+    });
+
+    it('treats destructive and idempotent as independent, not as opposites', async () => {
+      const { tools } = await (await connect(stubRepos())).listTools();
+      const byName = new Map(tools.map((t) => [t.name, t]));
+      const annotations = (name: string) => byName.get(name)?.annotations;
+
+      // Overwrites existing state, and re-applying lands on the same state:
+      // destructive AND idempotent. Deriving one from the other would mark this
+      // non-destructive, and a client auto-approving non-destructive tools would
+      // wave through wholesale replacement of real data.
+      expect(annotations('update_note')?.destructiveHint).toBe(true);
+      expect(annotations('update_note')?.idempotentHint).toBe(true);
+      expect(annotations('set_budget_amount')?.destructiveHint).toBe(true);
+
+      // Purely additive, and not idempotent — a second call makes a second row.
+      expect(annotations('create_payee')?.destructiveHint).toBe(false);
+      expect(annotations('create_payee')?.idempotentHint).toBe(false);
+
+      // Neither idempotent nor recoverable.
+      expect(annotations('merge_payees')?.destructiveHint).toBe(true);
+      expect(annotations('merge_payees')?.idempotentHint).toBe(false);
+
+      // Reads are never destructive.
+      for (const tool of tools.filter((t) => t.annotations?.readOnlyHint)) {
+        expect(tool.annotations?.destructiveHint).toBe(false);
+      }
     });
   });
 

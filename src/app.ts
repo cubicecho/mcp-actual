@@ -35,7 +35,10 @@ export function buildApp(deps: AppDeps): express.Express {
   });
 
   app.use(((err, _req, res, _next) => {
-    const status = err instanceof HttpError ? err.status : 500;
+    // body-parser rejections (malformed JSON, oversized body) carry their own
+    // `status`; without honouring it every one became a 500 with a stack trace,
+    // reachable pre-auth by anyone who can POST a broken body.
+    const status = err instanceof HttpError ? err.status : statusOf(err);
     if (status >= 500) {
       console.error(err);
     }
@@ -43,4 +46,12 @@ export function buildApp(deps: AppDeps): express.Express {
   }) satisfies express.ErrorRequestHandler);
 
   return app;
+}
+
+/** A framework error's own HTTP status, when it declares one; 500 otherwise. */
+function statusOf(err: unknown): number {
+  const status =
+    (err as { status?: unknown; statusCode?: unknown } | null)?.status ??
+    (err as { statusCode?: unknown } | null)?.statusCode;
+  return typeof status === 'number' && status >= 400 && status < 600 ? status : 500;
 }

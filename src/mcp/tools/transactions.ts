@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ActualRepos } from '../../actual/index.ts';
 import { defineTool, type ToolDefinition } from '../tool.ts';
+import { idSchema } from './ids.ts';
 
 /** `YYYY-MM-DD`, the only date format Actual accepts. */
 const dateSchema = z
@@ -17,9 +18,9 @@ const MAX_LIMIT = 1000;
 const searchSchema = z.object({
   dateFrom: dateSchema.optional(),
   dateTo: dateSchema.optional(),
-  accountId: z.string().min(1).optional(),
-  payeeId: z.string().min(1).optional(),
-  categoryId: z.string().min(1).optional(),
+  accountId: idSchema.optional(),
+  payeeId: idSchema.optional(),
+  categoryId: idSchema.optional(),
   notesContains: z.string().min(1).optional(),
   payeeNameContains: z.string().min(1).optional(),
   amountMin: centsSchema.optional(),
@@ -28,12 +29,13 @@ const searchSchema = z.object({
   reconciled: z.boolean().optional(),
   uncategorized: z.boolean().optional(),
   limit: z.number().int().positive().max(MAX_LIMIT).optional(),
+  offset: z.number().int().min(0).optional(),
 });
 
 const updateSchema = z.object({
-  id: z.string().min(1),
-  categoryId: z.string().min(1).nullable().optional(),
-  payeeId: z.string().min(1).nullable().optional(),
+  id: idSchema,
+  categoryId: idSchema.nullable().optional(),
+  payeeId: idSchema.nullable().optional(),
   notes: z.string().nullable().optional(),
   cleared: z.boolean().optional(),
   date: dateSchema.optional(),
@@ -50,14 +52,15 @@ export function transactionTools(repos: Pick<ActualRepos, 'transactions'>): Tool
         'category, note text, payee-name text, amount range, and cleared/reconciled state. Amounts are integer ' +
         'cents and negative means an outflow. Results are newest-first and capped by `limit` (default ' +
         `${DEFAULT_LIMIT}, max ${MAX_LIMIT}); when \`truncated\` is true, more matched than were returned — ` +
-        'narrow the filters rather than assuming you have seen everything. This is the tool for payee cleanup: ' +
+        'page with `offset` or narrow the filters rather than assuming you have seen everything. This is the ' +
+        'tool for payee cleanup: ' +
         'it can answer "where else does this payee appear?", which the per-account listing cannot.',
       inputSchema: {
         dateFrom: dateSchema.optional().describe('Only transactions on or after this date.'),
         dateTo: dateSchema.optional().describe('Only transactions on or before this date.'),
-        accountId: z.string().min(1).optional().describe('Restrict to one account.'),
-        payeeId: z.string().min(1).optional().describe('Restrict to one payee, by id.'),
-        categoryId: z.string().min(1).optional().describe('Restrict to one category, by id.'),
+        accountId: idSchema.optional().describe('Restrict to one account.'),
+        payeeId: idSchema.optional().describe('Restrict to one payee, by id.'),
+        categoryId: idSchema.optional().describe('Restrict to one category, by id.'),
         notesContains: z.string().min(1).optional().describe('Substring match against the notes field.'),
         payeeNameContains: z.string().min(1).optional().describe('Substring match against the payee’s name.'),
         amountMin: centsSchema.optional().describe('Minimum amount in cents (inclusive).'),
@@ -72,6 +75,15 @@ export function transactionTools(repos: Pick<ActualRepos, 'transactions'>): Tool
           .max(MAX_LIMIT)
           .optional()
           .describe(`Maximum results to return. Default ${DEFAULT_LIMIT}, maximum ${MAX_LIMIT}.`),
+        offset: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe(
+            'How many matching results to skip, for paging past `limit`. Keep every other filter identical ' +
+              'between pages, or the pages will not line up.',
+          ),
       },
       run: async (args) => {
         const filters = searchSchema.parse(args);
@@ -84,15 +96,17 @@ export function transactionTools(repos: Pick<ActualRepos, 'transactions'>): Tool
       title: 'Get an account’s transactions',
       description:
         'List every transaction in one account between two dates, with no result cap. Use `search_transactions` ' +
-        'for anything cross-account or filtered; this is the exhaustive per-account read, e.g. for reconciling.',
+        'for anything cross-account or filtered; this is the exhaustive per-account read, e.g. for reconciling.\n' +
+        'Split transactions are returned as the parent followed by each of its legs (`isParent` / `isChild`), ' +
+        'so summing every row double-counts a split — total the legs, or the parents, not both.',
       inputSchema: {
-        accountId: z.string().min(1).describe('The account to read.'),
+        accountId: idSchema.describe('The account to read.'),
         startDate: dateSchema.describe('First date to include (inclusive).'),
         endDate: dateSchema.describe('Last date to include (inclusive).'),
       },
       run: async (args) => {
         const { accountId, startDate, endDate } = z
-          .object({ accountId: z.string().min(1), startDate: dateSchema, endDate: dateSchema })
+          .object({ accountId: idSchema, startDate: dateSchema, endDate: dateSchema })
           .parse(args);
         const transactions = await repos.transactions.listForAccount(accountId, startDate, endDate);
         return { transactions, count: transactions.length };
@@ -108,15 +122,16 @@ export function transactionTools(repos: Pick<ActualRepos, 'transactions'>): Tool
         'transaction as stored afterwards — rules may rewrite a value on write, so trust the response over the ' +
         'request. The main tool for recategorizing during cleanup.',
       inputSchema: {
-        id: z.string().min(1).describe('Id of the transaction to change.'),
-        categoryId: z.string().min(1).nullable().optional().describe('New category id, or null to clear it.'),
-        payeeId: z.string().min(1).nullable().optional().describe('New payee id, or null to clear it.'),
+        id: idSchema.describe('Id of the transaction to change.'),
+        categoryId: idSchema.nullable().optional().describe('New category id, or null to clear it.'),
+        payeeId: idSchema.nullable().optional().describe('New payee id, or null to clear it.'),
         notes: z.string().nullable().optional().describe('New note text, or null to clear it.'),
         cleared: z.boolean().optional().describe('Mark cleared or uncleared.'),
         date: dateSchema.optional().describe('New date.'),
         amount: centsSchema.optional().describe('New amount in cents; negative is an outflow.'),
       },
       write: true,
+      destructive: true,
       idempotent: true,
       run: async (args) => {
         const { id, ...fields } = updateSchema.parse(args);

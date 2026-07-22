@@ -135,6 +135,14 @@ export interface RulePreviewEntry {
   payeeName?: string;
   amount: number;
   amountDecimal: number;
+  /**
+   * Always false in practice: AQL's default `inline` split mode filters parents
+   * out, so a preview only ever sees the legs. Carried so the distinction is
+   * explicit rather than assumed.
+   */
+  isParent: boolean;
+  /** True for one leg of a split. The parent is not listed alongside it. */
+  isChild: boolean;
   /** Keyed by field name; only fields the rules actually change appear. */
   changes: Record<string, RuleFieldChange>;
 }
@@ -149,6 +157,12 @@ export interface RulePreview {
   scanned: number;
   /** True when more transactions matched the filter than `limit` allowed. */
   truncated: boolean;
+  /**
+   * Ids of rules whose `set payee_name` action can make even a preview insert a
+   * payee, because Actual's engine creates unknown payees as it finalizes. Empty
+   * for the usual case; non-empty means previewing has a side effect.
+   */
+  createsPayees: string[];
 }
 
 export interface BudgetMonthSummary {
@@ -168,9 +182,17 @@ export interface BudgetCategory {
   id: string;
   name: string;
   groupName?: string;
+  /** Income categories track money coming in; `received` carries it, not `spent`. */
+  isIncome: boolean;
   budgeted: number;
   spent: number;
   balance: number;
+  /**
+   * Income only. Actual reports income as `received` and leaves `spent` unset,
+   * so on the default envelope budget an income category's budgeted/spent/
+   * balance are all genuinely 0 — this is the figure that means anything.
+   */
+  received?: number;
   /** When true, an unspent balance rolls into next month instead of returning to "to budget". */
   carryover: boolean;
 }
@@ -180,7 +202,14 @@ export interface Schedule {
   name?: string;
   accountId?: string;
   payeeId?: string;
+  /** Integer cents. Absent when the schedule matches an amount *range* — see below. */
   amount?: number;
+  amountDecimal?: number;
+  /** How `amount` is matched: "is", "isapprox", "isbetween", … */
+  amountOp?: string;
+  /** Range bounds, in cents, present instead of `amount` when `amountOp` is "isbetween". */
+  amountMin?: number;
+  amountMax?: number;
   nextDate?: string;
   completed: boolean;
   posts_transaction: boolean;

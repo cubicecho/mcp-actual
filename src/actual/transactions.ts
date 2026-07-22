@@ -25,6 +25,8 @@ export interface TransactionSearch {
   /** True to return only transactions with no category — the usual cleanup target. */
   uncategorized?: boolean;
   limit: number;
+  /** How many matching rows to skip, for paging past `limit`. Defaults to 0. */
+  offset?: number;
 }
 
 export interface TransactionsRepo {
@@ -80,6 +82,9 @@ interface TransactionRow {
   payee?: string | { id?: string; name?: string; transfer_acct?: string | null } | null;
   category?: string | { id?: string; name?: string } | null;
 }
+
+/** A transaction entity as the API's own handlers return it, before narrowing. */
+type RawEntity = Record<string, unknown>;
 
 /** AQL returns a reference either as a bare id or as an expanded object, depending on the select. */
 function refId(ref: TransactionRow['account']): string | undefined {
@@ -143,7 +148,13 @@ export function buildSearchFilter(filters: TransactionSearch): Record<string, un
     conditions.push({ category: filters.categoryId });
   }
   if (filters.uncategorized) {
-    conditions.push({ category: null });
+    // Actual treats "category is null" as *and not a transfer, and not a split
+    // parent* — see `conditionSpecialCases` in the rule engine. Both legs of
+    // every account transfer legitimately carry a null category, so the bare
+    // filter would offer them up as cleanup targets and an agent would
+    // categorize them, which is exactly what that special case prevents. Split
+    // parents are already excluded by the query's `inline` split mode.
+    conditions.push({ category: null }, { 'payee.transfer_acct': null });
   }
   if (filters.notesContains) {
     conditions.push({ notes: { $like: `%${filters.notesContains}%` } });
@@ -174,15 +185,16 @@ export function createTransactionsRepo(client: ActualClient): TransactionsRepo {
      * date range — so this goes through AQL instead.
      */
     search: (filters) =>
-      client.run(async () => {
+      client.read(async () => {
         // Fetch one extra row: if it comes back, more matched than we returned.
         const probe = filters.limit + 1;
-        const query = api
+        const base = api
           .q('transactions')
           .filter(buildSearchFilter(filters))
           .select(SELECT_FIELDS)
           .orderBy([{ date: 'desc' }, { amount: 'desc' }])
           .limit(probe);
+        const query = filters.offset ? base.offset(filters.offset) : base;
         const { data } = (await api.aqlQuery(query)) as { data: TransactionRow[] };
         const truncated = data.length > filters.limit;
         const rows = truncated ? data.slice(0, filters.limit) : data;
@@ -190,23 +202,35 @@ export function createTransactionsRepo(client: ActualClient): TransactionsRepo {
       }),
 
     listForAccount: (accountId, startDate, endDate) =>
-      client.run(async () => {
+      client.read(async () => {
         const rows = await api.getTransactions(accountId, startDate, endDate);
+        // `api/transactions-get` queries with `splits: 'grouped'`, so a split
+        // arrives as one parent carrying its legs in `subtransactions` — the
+        // legs are not rows of their own. Mapping only the top level would drop
+        // every leg, and with them the categories that make a split meaningful.
+        const flattened: RawEntity[] = [];
+        for (const row of rows as RawEntity[]) {
+          const { subtransactions, ...parent } = row;
+          flattened.push(parent);
+          for (const leg of (subtransactions as RawEntity[] | undefined) ?? []) {
+            flattened.push(leg);
+          }
+        }
         // getTransactions returns entities, not AQL rows: ids only, no joined names.
-        return rows.map((row) =>
+        return flattened.map((row) =>
           toTransaction({
-            id: row.id,
-            date: row.date,
-            amount: row.amount,
-            notes: row.notes,
-            cleared: row.cleared,
-            reconciled: row.reconciled,
-            is_parent: row.is_parent,
-            is_child: row.is_child,
-            imported_payee: row.imported_payee,
-            account: row.account,
-            payee: row.payee,
-            category: row.category,
+            id: row.id as string,
+            date: row.date as string,
+            amount: row.amount as number,
+            notes: row.notes as string | null | undefined,
+            cleared: row.cleared as boolean | undefined,
+            reconciled: row.reconciled as boolean | undefined,
+            is_parent: row.is_parent as boolean | undefined,
+            is_child: row.is_child as boolean | undefined,
+            imported_payee: row.imported_payee as string | null | undefined,
+            account: row.account as string | undefined,
+            payee: row.payee as string | undefined,
+            category: row.category as string | undefined,
           }),
         );
       }),
@@ -217,7 +241,7 @@ export function createTransactionsRepo(client: ActualClient): TransactionsRepo {
      * on write, and reporting the requested value would be a lie.
      */
     update: (id, fields) =>
-      client.run(async () => {
+      client.read(async () => {
         const patch: Record<string, unknown> = {};
         if (fields.categoryId !== undefined) {
           patch.category = fields.categoryId;
@@ -237,11 +261,42 @@ export function createTransactionsRepo(client: ActualClient): TransactionsRepo {
         if (fields.amount !== undefined) {
           patch.amount = fields.amount;
         }
-        await api.updateTransaction(id, patch);
-        const { data } = (await api.aqlQuery(api.q('transactions').filter({ id }).select(SELECT_FIELDS).limit(1))) as {
-          data: TransactionRow[];
+        const readRow = async (): Promise<TransactionRow | undefined> => {
+          const { data } = (await api.aqlQuery(
+            // `splits: 'all'` so a split parent is addressable: the default
+            // `inline` mode appends `AND is_parent = 0`, which would report a
+            // successful update to a parent as "no such transaction".
+            api.q('transactions').filter({ id }).select(SELECT_FIELDS).options({ splits: 'all' }).limit(1),
+          )) as { data: TransactionRow[] };
+          return data[0];
         };
-        const row = data[0];
+
+        const before = await readRow();
+        if (!before) {
+          return null;
+        }
+        // Which fields this patch would actually change. Comparing against
+        // these is how we know the write landed, below.
+        const fieldOf = (row: TransactionRow | undefined, key: string): unknown =>
+          (row as RawEntity | undefined)?.[key] ?? null;
+        const pending = Object.keys(patch).filter((key) => fieldOf(before, key) !== (patch[key] ?? null));
+
+        await api.updateTransaction(id, patch);
+
+        // `api/transaction-update` does `return handlers['transactions-batch-update'](diff)['updated']`
+        // — indexing the promise instead of awaiting it — so the write is still
+        // in flight when `updateTransaction` resolves. Reading immediately can
+        // observe the old row and report it as "what Actual stored". Poll until
+        // a targeted field moves rather than trusting the ordering.
+        let row = await readRow();
+        for (let attempt = 0; pending.length > 0 && attempt < 20; attempt++) {
+          const landed = pending.some((key) => fieldOf(row, key) !== fieldOf(before, key));
+          if (landed) {
+            break;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          row = await readRow();
+        }
         return row ? toTransaction(row) : null;
       }),
   };

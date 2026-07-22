@@ -35,6 +35,10 @@ export class ActualClient {
   private shuttingDown = false;
   /** `init`'s return value, kept for {@link send}. Null until the budget is open. */
   private lib: ActualLib | null = null;
+  /** Memoized shutdown, so concurrent `close` calls await one teardown. */
+  private closing: Promise<void> | null = null;
+  /** True while an operation has passed its deadline but not yet settled. */
+  private stalled = false;
 
   constructor(config: Config) {
     this.config = config;
@@ -50,17 +54,80 @@ export class ActualClient {
    * All Actual access goes through here — calling the library concurrently
    * would race on the one open budget.
    */
-  run<T>(fn: () => Promise<T>): Promise<T> {
-    const result = this.queue.then(async () => {
+  run<T>(fn: () => Promise<T>, options?: { timeoutMs?: number }): Promise<T> {
+    const timeoutMs = options?.timeoutMs ?? this.config.timeoutMs;
+    // Checked before enqueuing, not inside the queued body: while an operation
+    // is hung the queue never advances, so a check in there would itself wait
+    // out the full deadline and report a timeout instead of the real reason.
+    // Failing immediately turns an invisible wait into a legible error.
+    if (this.stalled) {
+      return Promise.reject(
+        new Error(
+          'Actual is not responding: a previous operation passed its deadline and has not finished. Every call ' +
+            'is serialized behind it, so nothing can run until it does. Restart the server if this persists.',
+        ),
+      );
+    }
+    const started = this.queue.then(async () => {
       if (this.shuttingDown) {
         throw new Error('Actual client is shutting down');
       }
       await this.ensureReady();
       return fn();
     });
-    // Keep the chain alive after a rejection — one failed call must not wedge the queue.
-    this.queue = result.catch(() => {});
-    return result;
+
+    // The queue must keep waiting for the *real* operation even after the caller
+    // has given up. `@actual-app/api` takes no AbortSignal, so a timed-out call
+    // is still running against the shared budget; letting the next one start
+    // would break the serialization this class exists to provide.
+    this.queue = started.catch(() => {});
+
+    return this.withDeadline(started, timeoutMs);
+  }
+
+  /**
+   * Reject the caller once `timeoutMs` elapses, while leaving the underlying
+   * operation to finish on its own. The client is marked stalled meanwhile, so
+   * later calls fail immediately instead of queueing invisibly, and recovers by
+   * itself if the operation eventually settles.
+   */
+  private withDeadline<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.stalled = true;
+        reject(new Error(`Actual operation timed out after ${timeoutMs}ms`));
+      }, timeoutMs);
+      timer.unref?.();
+      operation.then(
+        (value) => {
+          clearTimeout(timer);
+          this.stalled = false;
+          resolve(value);
+        },
+        (err: unknown) => {
+          clearTimeout(timer);
+          this.stalled = false;
+          reject(err as Error);
+        },
+      );
+    });
+  }
+
+  /**
+   * Run `fn` with the budget open **and freshly synced**, serialized like
+   * {@link run}. Every tool that reports budget data should use this: other
+   * Actual clients write to the same budget, and a tool that reports a stale
+   * balance is worse than one that is slightly slower.
+   *
+   * A sync failure propagates rather than falling back to the cached copy —
+   * silently answering from stale data is the failure mode this exists to
+   * prevent.
+   */
+  read<T>(fn: () => Promise<T>, options?: { timeoutMs?: number }): Promise<T> {
+    return this.run(async () => {
+      await api.sync();
+      return fn();
+    }, options);
   }
 
   /**
@@ -77,9 +144,14 @@ export class ActualClient {
 
   /** Close the budget and release the API's resources. Safe to call more than once. */
   async close(): Promise<void> {
-    if (this.shuttingDown) {
-      return;
-    }
+    // Memoized, not short-circuited: a second caller must *await* the first
+    // shutdown rather than resolve immediately. Returning early let a second
+    // signal run `process.exit(0)` while the budget was still being closed.
+    this.closing ??= this.doClose();
+    return this.closing;
+  }
+
+  private async doClose(): Promise<void> {
     this.shuttingDown = true;
     // Drain the queue first so we never shut the API down mid-operation.
     await this.queue.catch(() => {});
@@ -109,7 +181,15 @@ export class ActualClient {
     const { dataDir, serverUrl, password, syncId, encryptionPassword } = this.config;
     await mkdir(dataDir, { recursive: true });
     try {
-      this.lib = await api.init({ dataDir, serverURL: serverUrl, password });
+      // `verbose: false` is load-bearing, not tidiness. loot-core's logger
+      // defaults to verbose, `logger.log`/`logger.info` write to **stdout**,
+      // and a failed login logs the whole request body — which contains the
+      // password — as "API call failed: ... Data: { "password": ... }". The
+      // same logger narrates every sync, which on stdio would interleave
+      // non-JSON lines into the JSON-RPC stream that stdout *is*. Warnings and
+      // errors are not gated by this flag and go to stderr, so nothing
+      // diagnostic is lost.
+      this.lib = await api.init({ dataDir, serverURL: serverUrl, password, verbose: false });
     } catch (cause) {
       throw new Error(`Failed to connect to the Actual server at ${serverUrl}: ${errorChainMessage(cause)}`, { cause });
     }

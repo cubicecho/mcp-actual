@@ -8,16 +8,25 @@ export interface RulesRepo {
   list(options?: { payeeId?: string }): Promise<Rule[]>;
   create(rule: RuleInput): Promise<Rule>;
   update(id: string, rule: RuleInput): Promise<Rule>;
-  previewEffects(filters: TransactionSearch): Promise<RulePreview>;
+  previewEffects(filters: TransactionSearch, options?: { allowPayeeCreation?: boolean }): Promise<RulePreview>;
   applyActions(transactionIds: string[], actions: unknown[]): Promise<RuleApplyResult>;
 }
 
-/** What {@link RulesRepo.applyActions} actually changed. */
+/**
+ * What {@link RulesRepo.applyActions} actually changed, confirmed by reading
+ * the transactions back rather than by trusting the handler's return value.
+ * `batchUpdateTransactions` reports `updated` as the *transfer* bookkeeping it
+ * performed, which is empty for an ordinary categorization — reporting that
+ * verbatim would make every successful apply look like a no-op.
+ */
 export interface RuleApplyResult {
-  /** Ids Actual reported as updated. */
-  updated: string[];
+  /** Ids that existed and were handed to Actual. */
+  applied: string[];
   /** Ids that were asked for but did not exist — reported rather than silently dropped. */
   missing: string[];
+  /** Ids no longer present afterwards, i.e. a `delete-transaction` action landed. */
+  deleted: string[];
+  /** Rule errors Actual attached to the transactions it processed. */
   errors: string[];
 }
 
@@ -52,6 +61,17 @@ const RULE_FIELDS = [
   'account',
   'payee',
   'category',
+  // Split bookkeeping. AQL defaults to `splits: 'inline'`, whose executor
+  // appends `AND is_parent = 0`, so parents never come back from these queries
+  // and only the legs are addressable. These are selected anyway because
+  // `batchUpdateTransactions` nulls a parent's category only when it can see
+  // `is_parent`, and that guard must work if a parent ever does reach it.
+  'is_parent',
+  'is_child',
+  'parent_id',
+  // Running balances are computed from date + sort_order; without it, any
+  // balance-based condition or formula evaluates against the wrong ordering.
+  'sort_order',
 ];
 
 /** The fields a preview reports on. Anything a rule changes outside this set is still applied, just not shown. */
@@ -119,13 +139,14 @@ export function createRulesRepo(client: ActualClient): RulesRepo {
     };
   };
 
-  const fetchRaw = async (filter: Record<string, unknown>, limit: number): Promise<RawTransaction[]> => {
-    const query = api
+  const fetchRaw = async (filter: Record<string, unknown>, limit: number, offset = 0): Promise<RawTransaction[]> => {
+    const base = api
       .q('transactions')
       .filter(filter)
       .select(RULE_FIELDS)
       .orderBy([{ date: 'desc' }])
       .limit(limit);
+    const query = offset > 0 ? base.offset(offset) : base;
     const { data } = (await api.aqlQuery(query)) as { data: RawTransaction[] };
     return data;
   };
@@ -137,7 +158,7 @@ export function createRulesRepo(client: ActualClient): RulesRepo {
      * payee rather than string-matching our own way.
      */
     list: (options) =>
-      client.run(async () => {
+      client.read(async () => {
         const raw = options?.payeeId ? await api.getPayeeRules(options.payeeId) : await api.getRules();
         return raw.map(toRule);
       }),
@@ -168,16 +189,46 @@ export function createRulesRepo(client: ActualClient): RulesRepo {
      * and runs the whole ranked rule set over it. There is no per-rule matcher
      * on the handler surface, so this reports the net effect of *all* rules,
      * not one rule in isolation. See SPECS.md.
+     *
+     * One caveat, and it is the library's rather than ours: `runRules` finishes
+     * with `finalizeTransactionForRules`, which calls `insertPayee` when a rule
+     * sets `payee_name` to a payee that does not exist yet. So a budget
+     * containing a payee-rename rule can gain payee rows from a "preview".
+     * Nothing else is written, and no transaction is touched. Rules whose
+     * actions could do this are reported in `createsPayees` so the caller is
+     * never surprised by it.
      */
-    previewEffects: (filters) =>
-      client.run(async () => {
+    previewEffects: (filters, options) =>
+      client.read(async () => {
         // Fetch one extra row: if it comes back, more matched than we scanned.
-        const rows = await fetchRaw(buildSearchFilter(filters), filters.limit + 1);
+        const rows = await fetchRaw(buildSearchFilter(filters), filters.limit + 1, filters.offset);
         const truncated = rows.length > filters.limit;
         const scanned = truncated ? rows.slice(0, filters.limit) : rows;
         const names = await nameMaps();
         const resolve = (kind: 'payees' | 'categories', id: unknown): unknown =>
           typeof id === 'string' ? (names[kind].get(id) ?? id) : id;
+
+        // `rules-run` runs the whole rule set, and a `set payee_name` action to
+        // an unknown payee inserts one. Surface which rules can do that instead
+        // of letting a read quietly create rows.
+        const createsPayees = (await api.getRules())
+          .filter((rule) =>
+            (rule.actions as { op?: string; field?: string }[] | undefined)?.some(
+              (action) => action?.op === 'set' && action?.field === 'payee_name',
+            ),
+          )
+          .map((rule) => rule.id);
+        // Refuse rather than write behind the gate's back. With writes
+        // disabled the operator has said this server may not change the budget,
+        // and inserting a payee — even one the next import would have created —
+        // is still a change they did not authorize.
+        if (createsPayees.length > 0 && !options?.allowPayeeCreation) {
+          throw new Error(
+            `Cannot preview: ${createsPayees.length} rule(s) set \`payee_name\`, and Actual's engine creates an ` +
+              'unknown payee as it finalizes — so previewing would write to the budget. Writes are disabled on ' +
+              `this server. Rule ids: ${createsPayees.join(', ')}`,
+          );
+        }
 
         const entries: RulePreviewEntry[] = [];
         for (const row of scanned) {
@@ -193,10 +244,12 @@ export function createRulesRepo(client: ActualClient): RulesRepo {
             date: row.date,
             payeeName: typeof row.payee === 'string' ? names.payees.get(row.payee) : undefined,
             ...money(row.amount),
+            isParent: Boolean(row.is_parent),
+            isChild: Boolean(row.is_child),
             changes,
           });
         }
-        return { entries, scanned: scanned.length, truncated };
+        return { entries, scanned: scanned.length, truncated, createsPayees };
       }),
 
     /**
@@ -206,15 +259,28 @@ export function createRulesRepo(client: ActualClient): RulesRepo {
      * chosen the transactions, which is why this takes ids rather than a filter.
      */
     applyActions: (transactionIds, actions) =>
-      client.run(async () => {
+      // Read-modify-write: sync first, so the rows handed to Actual are not a
+      // stale copy of what another client has since changed.
+      client.read(async () => {
         const rows = await fetchRaw({ id: { $oneof: transactionIds } }, transactionIds.length);
-        const found = new Set(rows.map((row) => row.id));
+        // Defence in depth. AQL interpolates id values into SQL unescaped, so a
+        // malformed id can widen `IN (...)` into a match on the whole table —
+        // `idSchema` rejects that at the tool boundary, and this makes sure a
+        // second caller cannot hand this bulk write more rows than it asked for.
+        const requested = new Set(transactionIds);
+        const targeted = rows.filter((row) => requested.has(row.id));
+        if (targeted.length !== rows.length) {
+          throw new Error(
+            `Refusing to apply: the lookup matched ${rows.length} transactions for ${transactionIds.length} ids.`,
+          );
+        }
+        const found = new Set(targeted.map((row) => row.id));
         const missing = transactionIds.filter((id) => !found.has(id));
         if (rows.length === 0) {
-          return { updated: [], missing, errors: [] };
+          return { applied: [], missing, deleted: [], errors: [] };
         }
         const result = await client.send('rule-apply-actions', {
-          transactions: rows as never,
+          transactions: targeted as never,
           actions: actions as never,
         });
         // The handler returns null when it could not parse an action — a silent
@@ -224,11 +290,16 @@ export function createRulesRepo(client: ActualClient): RulesRepo {
             'Actual rejected the actions — one or more could not be parsed. Check the format with describe_rule_schema.',
           );
         }
+        // Deliberately NOT `result.updated`: with `runTransfers` on (the
+        // default) that field carries the transfer bookkeeping, which is empty
+        // for an ordinary categorization. Confirm by reading the rows back.
+        const applied = [...found];
+        const after = await fetchRaw({ id: { $oneof: applied } }, applied.length);
+        const surviving = new Set(after.map((row) => row.id));
         return {
-          updated: (result.updated as { id?: string }[])
-            .map((row) => row?.id)
-            .filter((id): id is string => Boolean(id)),
+          applied,
           missing,
+          deleted: applied.filter((id) => !surviving.has(id)),
           errors: result.errors ?? [],
         };
       }),

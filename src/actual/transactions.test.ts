@@ -1,5 +1,15 @@
-import { describe, expect, it } from 'vitest';
-import { buildSearchFilter } from './transactions.ts';
+import { describe, expect, it, vi } from 'vitest';
+
+const getTransactions = vi.fn();
+
+vi.mock('@actual-app/api', () => ({
+  getTransactions: (...args: unknown[]) => getTransactions(...args),
+  // `money()` converts through the library's own helper; the real one is a
+  // plain divide, so mirroring it keeps the mapped amounts meaningful here.
+  utils: { integerToAmount: (cents: number) => cents / 100 },
+}));
+
+import { buildSearchFilter, createTransactionsRepo } from './transactions.ts';
 
 describe('buildSearchFilter', () => {
   it('returns an empty filter when nothing is constrained', () => {
@@ -24,8 +34,13 @@ describe('buildSearchFilter', () => {
     });
   });
 
-  it('treats uncategorized as a null category', () => {
-    expect(buildSearchFilter({ limit: 10, uncategorized: true })).toEqual({ $and: [{ category: null }] });
+  it('excludes transfers from uncategorized, as Actual itself does', () => {
+    // Both legs of an account transfer carry a null category legitimately.
+    // Offering them as cleanup targets invites an agent to categorize them,
+    // which is what Actual's own `category is null` special case prevents.
+    expect(buildSearchFilter({ limit: 10, uncategorized: true })).toEqual({
+      $and: [{ category: null }, { 'payee.transfer_acct': null }],
+    });
   });
 
   it('keeps a zero amount bound rather than dropping it as falsy', () => {
@@ -54,5 +69,41 @@ describe('buildSearchFilter', () => {
         { reconciled: true },
       ],
     });
+  });
+});
+
+describe('listForAccount', () => {
+  const repo = createTransactionsRepo({
+    read: (fn: () => Promise<unknown>) => fn(),
+    run: (fn: () => Promise<unknown>) => fn(),
+  } as Parameters<typeof createTransactionsRepo>[0]);
+
+  it('flattens split legs, which arrive nested rather than as rows', () => {
+    // `api/transactions-get` queries with `splits: 'grouped'`, so the legs live
+    // in `subtransactions` — mapping only the top level loses them entirely.
+    getTransactions.mockResolvedValue([
+      { id: 't-1', date: '2026-07-01', amount: -1000, account: 'a-1' },
+      {
+        id: 't-2',
+        date: '2026-07-02',
+        amount: -5000,
+        account: 'a-1',
+        is_parent: true,
+        subtransactions: [
+          { id: 't-2a', date: '2026-07-02', amount: -3000, account: 'a-1', is_child: true, category: 'c-1' },
+          { id: 't-2b', date: '2026-07-02', amount: -2000, account: 'a-1', is_child: true, category: 'c-2' },
+        ],
+      },
+    ]);
+    return repo.listForAccount('a-1', '2026-07-01', '2026-07-31').then((rows) => {
+      expect(rows.map((row) => row.id)).toEqual(['t-1', 't-2', 't-2a', 't-2b']);
+      expect(rows.find((row) => row.id === 't-2')?.isParent).toBe(true);
+      expect(rows.find((row) => row.id === 't-2a')?.categoryId).toBe('c-1');
+    });
+  });
+
+  it('handles a plain account with no splits', async () => {
+    getTransactions.mockResolvedValue([{ id: 't-9', date: '2026-07-01', amount: -100, account: 'a-1' }]);
+    expect((await repo.listForAccount('a-1', '2026-07-01', '2026-07-31')).map((row) => row.id)).toEqual(['t-9']);
   });
 });

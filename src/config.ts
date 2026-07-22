@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { z } from 'zod';
+import { authDisabledByEnv } from './auth.ts';
 
 /**
  * All configuration is environment-driven — there is no on-disk config file.
@@ -29,6 +30,12 @@ const configSchema = z.object({
    * There is no second "destructive" tier: deletes are ordinary writes.
    */
   enableWrites: z.boolean(),
+  /**
+   * Ceiling on a single Actual operation. Every call is serialized through one
+   * queue, so an unbounded hang does not stall one request — it stalls the
+   * whole server, permanently.
+   */
+  timeoutMs: z.number().int().min(1000),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -79,6 +86,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     // Default on: the server is most useful when an agent can act, and the
     // gate exists to be turned *off* deliberately for read-only deployments.
     enableWrites: envBoolean(env, 'ACTUAL_ENABLE_WRITES', true),
+    timeoutMs: Number(envValue(env, 'ACTUAL_TIMEOUT_MS') ?? 120_000),
   });
   if (!parsed.success) {
     const issues = parsed.error.issues.map(
@@ -86,7 +94,31 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     );
     throw new Error(`Invalid configuration:\n${issues.join('\n')}`);
   }
+  assertAuthConfigured(parsed.data, env);
   return parsed.data;
+}
+
+/**
+ * Refuse to start unauthenticated unless that was asked for explicitly.
+ *
+ * Serving a budget with no token exposes someone's entire financial history to
+ * anyone who can reach the port, and with writes on (the default) it lets them
+ * change it. Leaving `MCP_ACTUAL_TOKEN` unset is indistinguishable from
+ * misspelling it, so the previous behaviour — start anyway, print a warning —
+ * turned one typo into a silent, open, writable server. Running without a token
+ * stays possible; it just has to be stated, via `SECURE_LOCAL_NET=true`.
+ */
+function assertAuthConfigured(config: Config, env: NodeJS.ProcessEnv): void {
+  if (config.authToken || authDisabledByEnv(env)) {
+    return;
+  }
+  const writable = config.enableWrites ? ' — with writes enabled, meaning they could modify your budget' : '';
+  throw new Error(
+    'Invalid configuration:\n' +
+      `  MCP_ACTUAL_TOKEN: not set, so /mcp would be open to anyone who can reach this port${writable}.\n` +
+      '  Set MCP_ACTUAL_TOKEN to a secret of your choosing, or set SECURE_LOCAL_NET=true to confirm you ' +
+      'intend an unauthenticated server on a trusted network.',
+  );
 }
 
 /** Config field → the env var that sets it, so validation errors name what the operator actually edits. */
@@ -99,4 +131,5 @@ const ENV_KEYS: Record<string, string> = {
   port: 'PORT',
   authToken: 'MCP_ACTUAL_TOKEN',
   enableWrites: 'ACTUAL_ENABLE_WRITES',
+  timeoutMs: 'ACTUAL_TIMEOUT_MS',
 };

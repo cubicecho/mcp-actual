@@ -144,8 +144,9 @@ fill in the three required values. `docker compose` reads that same `.env`.
 | `ACTUAL_PASSWORD` | ✅ | — | The sync server's login password |
 | `ACTUAL_SYNC_ID` | ✅ | — | Actual → Settings → Advanced settings → "Sync ID" |
 | `ACTUAL_ENCRYPTION_PASSWORD` | | — | Only if the budget has end-to-end encryption enabled |
-| `MCP_ACTUAL_TOKEN` | | — | Bearer token clients must send to `/mcp`; unset means no auth |
-| `SECURE_LOCAL_NET` | | — | `true` disables auth entirely (trusted networks only) |
+| `MCP_ACTUAL_TOKEN` | ✅\* | — | Bearer token clients must send to `/mcp`. \*Required unless `SECURE_LOCAL_NET=true` |
+| `SECURE_LOCAL_NET` | | — | `true` runs with no auth at all (trusted networks only) |
+| `ACTUAL_TIMEOUT_MS` | | `120000` | Deadline for one Actual operation; bank sync gets its own, longer one |
 | `ACTUAL_ENABLE_WRITES` | | `true` | `false` serves only read-only tools; write tools are not advertised at all |
 | `DATA_DIR` | | `./data` (`/data` in Docker) | Where the downloaded budget is cached |
 | `PORT` | | `3000` | HTTP port |
@@ -226,12 +227,15 @@ configured Actual server URL) used by the Docker healthcheck.
 ## Security notes
 
 - The server holds your Actual password and reads your full financial data.
-  Set `MCP_ACTUAL_TOKEN` unless it is unreachable from untrusted networks.
+  **It refuses to start without `MCP_ACTUAL_TOKEN`**, unless you set
+  `SECURE_LOCAL_NET=true` to say an unauthenticated server is what you intended.
+  An unset variable looks exactly like a misspelled one, so the old behaviour —
+  start anyway and warn — turned a single typo into an open server.
 - **Writes are on by default.** An agent connected to this server can change
   categories, rename and merge payees, create rules, and move budgeted money.
-  Combined with no bearer token, anyone who can reach the port can do the same —
-  the server warns loudly at startup when it detects that combination. Set
-  `ACTUAL_ENABLE_WRITES=false` for a read-only deployment.
+  Combined with `SECURE_LOCAL_NET=true`, anyone who can reach the port can do
+  the same — the server warns loudly at startup when it detects that
+  combination. Set `ACTUAL_ENABLE_WRITES=false` for a read-only deployment.
 - `merge_payees` **cannot be undone**. There are no delete tools at all.
 - `DATA_DIR` contains a plaintext SQLite copy of the budget. Treat it as
   sensitive; do not commit it (`data/` is gitignored).

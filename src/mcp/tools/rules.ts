@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ActualRepos } from '../../actual/index.ts';
 import { defineTool, type ToolDefinition } from '../tool.ts';
+import { idSchema } from './ids.ts';
 
 /**
  * Which operators are legal for each condition field. Actual models this as a
@@ -23,7 +24,41 @@ const CONDITION_OPS: Record<string, readonly string[]> = {
   transfer: ['is'],
 };
 
-const ACTION_OPS = ['set', 'set-split-amount', 'link-schedule', 'prepend-notes', 'append-notes', 'delete'] as const;
+/**
+ * Actual's `ACTION_OPS`, verbatim. The `Action` constructor asserts membership,
+ * so a wrong op throws from inside the library — note it is
+ * `delete-transaction`, not `delete`.
+ */
+const ACTION_OPS = [
+  'set',
+  'set-split-amount',
+  'link-schedule',
+  'prepend-notes',
+  'append-notes',
+  'delete-transaction',
+] as const;
+
+/**
+ * Fields a `set` action may target, from Actual's `FIELD_INFO`. The `Action`
+ * constructor asserts `FIELD_TYPES.get(field)` is defined, so an unlisted field
+ * throws from inside the library rather than failing validation here.
+ */
+const SET_FIELDS = [
+  'imported_payee',
+  'payee',
+  'payee_name',
+  'date',
+  'notes',
+  'amount',
+  'category',
+  'category_group',
+  'account',
+  'cleared',
+  'reconciled',
+  'saved',
+  'transfer',
+  'parent',
+] as const;
 
 const conditionSchema = z
   .object({
@@ -49,12 +84,28 @@ const conditionSchema = z
     }
   });
 
-const actionSchema = z.object({
-  field: z.string().optional(),
-  op: z.enum(ACTION_OPS),
-  value: z.unknown(),
-  options: z.record(z.unknown()).optional(),
-});
+const actionSchema = z
+  .object({
+    field: z.string().optional(),
+    op: z.enum(ACTION_OPS),
+    value: z.unknown(),
+    options: z.record(z.unknown()).optional(),
+  })
+  .superRefine((action, ctx) => {
+    if (action.op !== 'set') {
+      return;
+    }
+    if (!action.field) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'A "set" action requires a `field`.' });
+      return;
+    }
+    if (!SET_FIELDS.includes(action.field as (typeof SET_FIELDS)[number])) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Cannot set field "${action.field}". Valid fields: ${SET_FIELDS.join(', ')}`,
+      });
+    }
+  });
 
 const ruleBodySchema = z.object({
   stage: z.enum(['pre', 'post']).nullable().optional(),
@@ -85,8 +136,12 @@ const RULE_SCHEMA_DOC = {
     'prepend-notes': 'Prepend text to the note: { op: "prepend-notes", value: "text" }.',
     'append-notes': 'Append text to the note: { op: "append-notes", value: "text" }.',
     'link-schedule': 'Link the transaction to a schedule: { op: "link-schedule", value: "<schedule id>" }.',
-    'set-split-amount': 'Split the transaction; value is the amount, options.splitIndex selects the split.',
-    delete: 'Delete the matching transaction. Use with extreme care.',
+    'set-split-amount':
+      'Split the transaction; value is the amount, options.splitIndex selects the split, and options.method ' +
+      'is one of fixed-amount, fixed-percent, formula, remainder.',
+    'delete-transaction':
+      'Delete the matching transaction. The op is "delete-transaction" — plain "delete" is rejected. Use with ' +
+      'extreme care.',
   },
   examples: [
     {
@@ -131,16 +186,22 @@ const previewFilterSchema = {
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .optional()
     .describe('Only transactions on or before this date (YYYY-MM-DD).'),
-  accountId: z.string().min(1).optional().describe('Restrict to one account.'),
-  payeeId: z.string().min(1).optional().describe('Restrict to one payee.'),
-  categoryId: z.string().min(1).optional().describe('Restrict to one category.'),
+  accountId: idSchema.optional().describe('Restrict to one account.'),
+  payeeId: idSchema.optional().describe('Restrict to one payee.'),
+  categoryId: idSchema.optional().describe('Restrict to one category.'),
   uncategorized: z.boolean().optional().describe('Only transactions with no category — the usual cleanup target.'),
   notesContains: z.string().min(1).optional().describe('Substring match against notes.'),
   payeeNameContains: z.string().min(1).optional().describe('Substring match against the payee name.'),
   limit: z.number().int().min(1).max(MAX_BATCH).optional().describe('How many transactions to scan. Default 100.'),
+  offset: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe('How many matching transactions to skip, for paging past `limit`. Keep the other filters identical.'),
 };
 
-export function ruleTools(repos: Pick<ActualRepos, 'rules'>): ToolDefinition[] {
+export function ruleTools(repos: Pick<ActualRepos, 'rules'>, enableWrites: boolean): ToolDefinition[] {
   return [
     defineTool({
       name: 'describe_rule_schema',
@@ -161,10 +222,10 @@ export function ruleTools(repos: Pick<ActualRepos, 'rules'>): ToolDefinition[] {
         'Actual associates with that payee, which is the quick way to see why transactions for one merchant ' +
         'keep getting a particular category.',
       inputSchema: {
-        payeeId: z.string().min(1).optional().describe('Only rules associated with this payee id.'),
+        payeeId: idSchema.optional().describe('Only rules associated with this payee id.'),
       },
       run: async (args) => {
-        const { payeeId } = z.object({ payeeId: z.string().min(1).optional() }).parse(args);
+        const { payeeId } = z.object({ payeeId: idSchema.optional() }).parse(args);
         const rules = await repos.rules.list({ payeeId });
         return { rules, count: rules.length };
       },
@@ -214,16 +275,17 @@ export function ruleTools(repos: Pick<ActualRepos, 'rules'>): ToolDefinition[] {
         'Replace a rule’s conditions and actions. This overwrites the whole rule, so send the complete set — ' +
         'anything omitted is dropped, not preserved. Read the current rule with `list_rules` first.',
       inputSchema: {
-        id: z.string().min(1).describe('Id of the rule to replace.'),
+        id: idSchema.describe('Id of the rule to replace.'),
         conditions: z.array(conditionSchema).min(1).describe('The complete condition set, not a partial update.'),
         actions: z.array(actionSchema).min(1).describe('The complete action set, not a partial update.'),
         conditionsOp: z.enum(['and', 'or']).optional().describe('Defaults to "and".'),
         stage: z.enum(['pre', 'post']).nullable().optional().describe('Defaults to null, the normal stage.'),
       },
       write: true,
+      destructive: true,
       idempotent: true,
       run: async (args) => {
-        const { id, ...body } = ruleBodySchema.extend({ id: z.string().min(1) }).parse(args);
+        const { id, ...body } = ruleBodySchema.extend({ id: idSchema }).parse(args);
         return {
           rule: await repos.rules.update(id, {
             stage: body.stage ?? null,
@@ -253,9 +315,19 @@ export function ruleTools(repos: Pick<ActualRepos, 'rules'>): ToolDefinition[] {
       inputSchema: previewFilterSchema,
       run: async (args) => {
         const filters = z
-          .object({ ...previewFilterSchema, limit: z.number().int().min(1).max(MAX_BATCH).optional() })
+          .object({
+            ...previewFilterSchema,
+            limit: z.number().int().min(1).max(MAX_BATCH).optional(),
+            offset: z.number().int().min(0).optional(),
+          })
           .parse(args);
-        return repos.rules.previewEffects({ ...filters, limit: filters.limit ?? 100 });
+        // Previewing can insert a payee when a rule sets `payee_name` (Actual's
+        // engine creates unknown payees as it finalizes), so on a read-only
+        // server the repo refuses instead of writing behind the gate.
+        return repos.rules.previewEffects(
+          { ...filters, limit: filters.limit ?? 100 },
+          { allowPayeeCreation: enableWrites },
+        );
       },
     }),
 
@@ -274,17 +346,18 @@ export function ruleTools(repos: Pick<ActualRepos, 'rules'>): ToolDefinition[] {
         'plus any that did not exist under `missing`.',
       inputSchema: {
         transactionIds: z
-          .array(z.string().min(1))
+          .array(idSchema)
           .min(1)
           .max(MAX_BATCH)
           .describe(`Ids of the transactions to change. At most ${MAX_BATCH}.`),
         actions: z.array(actionSchema).min(1).describe('Actions to apply. Same format as create_rule.'),
       },
       write: true,
+      destructive: true,
       run: async (args) => {
         const { transactionIds, actions } = z
           .object({
-            transactionIds: z.array(z.string().min(1)).min(1).max(MAX_BATCH),
+            transactionIds: z.array(idSchema).min(1).max(MAX_BATCH),
             actions: z.array(actionSchema).min(1),
           })
           .parse(args);
