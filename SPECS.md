@@ -158,7 +158,17 @@ source rather than inferred from its types:
   action naming a payee that does not exist. Nothing else is written and no
   transaction is touched, but this means `preview_rule_effects` is not perfectly
   side-effect-free; it reports the rules capable of it in `createsPayees` rather
-  than hiding it.
+  than hiding it. The read-only refusal is scoped to rules whose `payee_name`
+  target does **not** already resolve to a payee (or is a non-literal template):
+  a rename to an existing payee — the common cleanup case — cannot insert, so it
+  no longer blocks a read-only preview. The refusal stays conservative on
+  matching (it cannot know which rules fire without running them).
+- **`resolve_name_to_id` queries AQL directly**, not via `getIDByName`. That
+  handler signals "no match" only by throwing an APIError with a human-readable
+  message, and keying null-vs-error on that string coupled us to its wording — a
+  reworded miss would become a thrown error, a closed budget a false "not found".
+  Running the same query (`q(type).filter({ name }).select(['id'])`) makes an
+  empty result the unambiguous null and lets any real failure propagate.
 
 Each previewed change carries **both** the display name and the raw id
 (`from`/`to` plus `fromId`/`toId`). Names alone were unusable — actions take ids
@@ -258,12 +268,16 @@ it pulls the server's state. Treated as a read.
   is exposed either way.
 - **Every operation has a deadline** (`ACTUAL_TIMEOUT_MS`, default 120s). Calls
   are serialized through one queue, so an unbounded hang stalls the whole server
-  rather than one request. On timeout the *caller* is rejected but the queue
-  keeps waiting for the real operation: `@actual-app/api` takes no `AbortSignal`,
-  so a timed-out call is still running against the shared budget and starting
-  the next one would break the serialization the client exists to provide.
-  Meanwhile the client is marked stalled and later calls fail immediately
-  instead of queueing invisibly, recovering by itself if the operation settles.
+  rather than one request. The deadline is measured from when the operation
+  *begins executing*, not from when it was enqueued — otherwise a burst of
+  healthy-but-slow calls would spend a queued call's whole budget on queue wait
+  and spuriously time it out, tripping the stalled latch under mere load. On
+  timeout the *caller* is rejected but the queue keeps waiting for the real
+  operation: `@actual-app/api` takes no `AbortSignal`, so a timed-out call is
+  still running against the shared budget and starting the next one would break
+  the serialization the client exists to provide. Meanwhile the client is marked
+  stalled and later calls fail immediately instead of queueing invisibly,
+  recovering by itself if the operation settles.
   `run_bank_sync` passes its own 10-minute deadline: it is legitimately slow,
   and the general timeout exists to catch hangs, not slowness.
 - **`@actual-app/api` is pinned exactly**, not caret-ranged. The behaviours
