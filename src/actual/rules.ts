@@ -208,14 +208,23 @@ export function createRulesRepo(client: ActualClient): RulesRepo {
         const resolve = (kind: 'payees' | 'categories', id: unknown): unknown =>
           typeof id === 'string' ? (names[kind].get(id) ?? id) : id;
 
-        // `rules-run` runs the whole rule set, and a `set payee_name` action to
-        // an unknown payee inserts one. Surface which rules can do that instead
-        // of letting a read quietly create rows.
+        // `rules-run` runs the whole rule set, and a `set payee_name` action
+        // inserts a payee *only when that name does not already exist* — Actual's
+        // `finalizeTransactionForRules` resolves an existing name rather than
+        // creating. So a rename to a payee that already exists (the common
+        // cleanup case) is safe to preview; only a rename to a genuinely new
+        // name, or a non-literal template value we cannot check, can write.
+        // This still cannot tell whether such a rule matches the scanned rows,
+        // so it stays conservative on that axis, but it no longer blocks every
+        // budget that merely contains a rename rule.
+        const existingPayeeNames = new Set([...names.payees.values()].map((name) => name.toLowerCase()));
+        const wouldInsertPayee = (action: { op?: string; field?: string; value?: unknown }): boolean =>
+          action?.op === 'set' &&
+          action?.field === 'payee_name' &&
+          (typeof action.value !== 'string' || !existingPayeeNames.has(action.value.toLowerCase()));
         const createsPayees = (await api.getRules())
           .filter((rule) =>
-            (rule.actions as { op?: string; field?: string }[] | undefined)?.some(
-              (action) => action?.op === 'set' && action?.field === 'payee_name',
-            ),
+            (rule.actions as { op?: string; field?: string; value?: unknown }[] | undefined)?.some(wouldInsertPayee),
           )
           .map((rule) => rule.id);
         // Refuse rather than write behind the gate's back. With writes

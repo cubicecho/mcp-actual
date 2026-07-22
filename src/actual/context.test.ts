@@ -1,12 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const getIDByName = vi.fn();
 const getAccounts = vi.fn();
 const aqlQuery = vi.fn();
 const runBankSync = vi.fn();
 
 vi.mock('@actual-app/api', () => ({
-  getIDByName: (...args: unknown[]) => getIDByName(...args),
   getAccounts: () => getAccounts(),
   aqlQuery: (...args: unknown[]) => aqlQuery(...args),
   runBankSync: (...args: unknown[]) => runBankSync(...args),
@@ -60,20 +58,22 @@ describe('resolveNameToId', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('returns the id on a match', async () => {
-    getIDByName.mockResolvedValue('p-1');
+    aqlQuery.mockResolvedValue({ data: [{ id: 'p-1' }] });
     expect(await repo.resolveNameToId('payees', 'Costco')).toBe('p-1');
   });
 
-  it('returns null only for a genuine miss', async () => {
-    getIDByName.mockRejectedValue(new Error('Not found: payees with name Costco'));
+  it('returns null for a genuine miss — an empty result, not a thrown error', async () => {
+    aqlQuery.mockResolvedValue({ data: [] });
     expect(await repo.resolveNameToId('payees', 'Costco')).toBeNull();
   });
 
-  it('rethrows other failures instead of reporting them as "does not exist"', async () => {
-    // Swallowing these made a closed budget look like a missing payee, on which
-    // an agent would go and create a duplicate.
-    getIDByName.mockRejectedValue(new Error('File is not open'));
-    await expect(repo.resolveNameToId('payees', 'Costco')).rejects.toThrow(/Failed to resolve payees/);
+  it('propagates a real failure instead of reporting it as "does not exist"', async () => {
+    // A closed budget or query error must not look like a missing payee, on
+    // which an agent would go and create a duplicate. The old code keyed this
+    // on matching the library's "Not found:" message; this keys on an empty
+    // result set, so any thrown error propagates unchanged.
+    aqlQuery.mockRejectedValue(new Error('File is not open'));
+    await expect(repo.resolveNameToId('payees', 'Costco')).rejects.toThrow(/File is not open/);
   });
 });
 
