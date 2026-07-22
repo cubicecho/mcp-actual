@@ -1,7 +1,7 @@
 import * as api from '@actual-app/api';
 import type { ActualClient } from './client.ts';
 import { money } from './money.ts';
-import type { Transaction, TransactionPage } from './types.ts';
+import type { Transaction, TransactionPage, TransferPair } from './types.ts';
 
 /**
  * Filters for {@link TransactionsRepo.search}. Every field is optional; with
@@ -33,6 +33,8 @@ export interface TransactionsRepo {
   search(filters: TransactionSearch): Promise<TransactionPage>;
   listForAccount(accountId: string, startDate: string, endDate: string): Promise<Transaction[]>;
   update(id: string, fields: TransactionUpdate): Promise<Transaction | null>;
+  linkTransfer(transactionId: string, counterpartId: string): Promise<TransferPair>;
+  unlinkTransfer(transactionId: string): Promise<TransferPair>;
 }
 
 /** The fields a tool may change on a transaction — deliberately narrow. */
@@ -120,6 +122,7 @@ function toTransaction(row: TransactionRow): Transaction {
     reconciled: Boolean(row.reconciled),
     importedPayee: optional(row.imported_payee),
     transferAccountId: optional(payee?.transfer_acct),
+    transferId: optional(row.transfer_id),
     isParent: Boolean(row.is_parent),
     isChild: Boolean(row.is_child),
   };
@@ -177,7 +180,66 @@ export function buildSearchFilter(filters: TransactionSearch): Record<string, un
   return conditions.length > 0 ? { $and: conditions } : {};
 }
 
+/** One entry of a `transactions-batch-update` patch. Only the fields transfers touch. */
+interface TransferPatch {
+  id: string;
+  payee?: string | null;
+  transfer_id?: string | null;
+  category?: string | null;
+}
+
 export function createTransactionsRepo(client: ActualClient): TransactionsRepo {
+  /**
+   * Read specific transactions by id. `splits: 'all'` because the default
+   * `inline` mode appends `AND is_parent = 0`, which would report a split
+   * parent as "no such transaction" instead of as an invalid transfer leg.
+   */
+  const readByIds = async (ids: string[]): Promise<TransactionRow[]> => {
+    const { data } = (await api.aqlQuery(
+      api
+        .q('transactions')
+        .filter({ id: { $oneof: ids } })
+        .select(SELECT_FIELDS)
+        .options({ splits: 'all' })
+        .limit(ids.length),
+    )) as { data: TransactionRow[] };
+    // Defence in depth, as in `applyActions`: AQL interpolates id values into
+    // SQL unescaped, so a malformed id can widen `IN (...)` into a match on the
+    // whole table. `idSchema` rejects that at the tool boundary; this makes
+    // sure a write never acts on rows it did not ask for.
+    const requested = new Set(ids);
+    const targeted = data.filter((row) => requested.has(row.id));
+    if (targeted.length !== data.length) {
+      throw new Error(`Refusing to continue: the lookup matched ${data.length} transactions for ${ids.length} ids.`);
+    }
+    return targeted;
+  };
+
+  /**
+   * Apply a transfer patch and return both legs as Actual stored them.
+   *
+   * `runTransfers: false` is load-bearing. With the default on, the engine's
+   * `onUpdate` sees a transfer payee plus a `transfer_id` and calls
+   * `updateTransfer`, which overwrites the counterpart's account, amount and
+   * notes from this leg — so linking two real imported transactions would
+   * rewrite one of them. Both legs are being set explicitly here; the engine
+   * has nothing left to derive.
+   */
+  const applyTransferPatch = async (
+    updated: TransferPatch[],
+    primaryId: string,
+    counterpartId?: string,
+  ): Promise<TransferPair> => {
+    await client.send('transactions-batch-update', { updated: updated as never, runTransfers: false });
+    const ids = counterpartId ? [primaryId, counterpartId] : [primaryId];
+    const byId = new Map((await readByIds(ids)).map((row) => [row.id, toTransaction(row)]));
+    const transaction = byId.get(primaryId);
+    if (!transaction) {
+      throw new Error(`Transaction "${primaryId}" disappeared while updating it`);
+    }
+    return { transaction, counterpart: counterpartId ? byId.get(counterpartId) : undefined };
+  };
+
   return {
     /**
      * Cross-account transaction search. `getTransactions` cannot answer
@@ -298,6 +360,129 @@ export function createTransactionsRepo(client: ActualClient): TransactionsRepo {
           row = await readRow();
         }
         return row ? toTransaction(row) : null;
+      }),
+
+    /**
+     * Pair two transactions that already exist as the two legs of one transfer:
+     * each leg's payee becomes the *other* account's transfer payee, and each
+     * leg's `transfer_id` points at the other.
+     *
+     * This is deliberately not the same operation as setting a transfer payee
+     * with `update`. That path runs Actual's `addTransfer`, which **inserts** a
+     * counter-transaction in the destination account — correct when only one
+     * side exists, a duplicate when both accounts imported the same movement.
+     * Linking is the case the public API has no function for, so it goes
+     * through the `transactions-batch-update` handler directly.
+     *
+     * Validation mirrors loot-core's own `validForTransfer` (different
+     * accounts, amounts cancelling, neither already linked) plus a split-parent
+     * check: `addTransfer` refuses parents and `onUpdate` strips a transfer
+     * from one, so a parent can never be a leg.
+     */
+    linkTransfer: (transactionId, counterpartId) =>
+      // Read-modify-write: sync first, so the rows this validates against are
+      // not a stale copy of what another client has since changed.
+      client.read(async () => {
+        if (transactionId === counterpartId) {
+          throw new Error('A transfer needs two different transactions; the same id was given twice.');
+        }
+        const rows = await readByIds([transactionId, counterpartId]);
+        const byId = new Map(rows.map((row) => [row.id, row]));
+        const missing = [transactionId, counterpartId].filter((id) => !byId.has(id));
+        if (missing.length > 0) {
+          throw new Error(`No transaction found with id ${missing.map((id) => `"${id}"`).join(' or ')}`);
+        }
+        const from = byId.get(transactionId) as TransactionRow;
+        const to = byId.get(counterpartId) as TransactionRow;
+
+        const parents = [from, to].filter((row) => row.is_parent).map((row) => `"${row.id}"`);
+        if (parents.length > 0) {
+          throw new Error(
+            `Cannot link ${parents.join(' and ')}: a split parent cannot be a transfer leg. Link the individual ` +
+              'split leg that moves the money instead.',
+          );
+        }
+        const linked = [from, to].filter((row) => row.transfer_id);
+        if (linked.length > 0) {
+          const detail = linked.map((row) => `"${row.id}" is already linked to "${row.transfer_id}"`).join('; ');
+          throw new Error(`Cannot link: ${detail}. Unlink it first if the existing pairing is wrong.`);
+        }
+        const fromAccount = refId(from.account);
+        const toAccount = refId(to.account);
+        if (!fromAccount || !toAccount || fromAccount === toAccount) {
+          throw new Error('Cannot link: a transfer moves money between two different accounts, and both are in one.');
+        }
+        if (from.amount + to.amount !== 0) {
+          throw new Error(
+            `Cannot link: the amounts must cancel out, but ${from.amount} and ${to.amount} sum to ` +
+              `${from.amount + to.amount} cents. These are not the two sides of one movement.`,
+          );
+        }
+
+        // Each leg carries the *other* account's transfer payee — that is the
+        // direction `addTransfer` uses, and the payee is what makes Actual (and
+        // its reports) treat the row as a transfer at all.
+        const payees = await api.getPayees();
+        const transferPayee = (accountId: string) => payees.find((payee) => payee.transfer_acct === accountId);
+        const fromPayee = transferPayee(toAccount);
+        const toPayee = transferPayee(fromAccount);
+        if (!fromPayee || !toPayee) {
+          const which = !fromPayee ? toAccount : fromAccount;
+          throw new Error(`Account "${which}" has no transfer payee, so nothing can be transferred to it.`);
+        }
+
+        // Mirror the engine's own `clearCategory`: a transfer between two
+        // accounts on the same side of the budget is not spending, and leaving
+        // a category on one would double-count it. Between an on-budget and an
+        // off-budget account it *is* budget-relevant, and Actual keeps the
+        // category there — so this does too.
+        const accounts = await api.getAccounts();
+        const offBudget = (id: string) => Boolean(accounts.find((account) => account.id === id)?.offbudget);
+        const clearCategory = offBudget(fromAccount) === offBudget(toAccount);
+        const category = clearCategory ? { category: null } : {};
+
+        return applyTransferPatch(
+          [
+            { id: from.id, payee: fromPayee.id, transfer_id: to.id, ...category },
+            { id: to.id, payee: toPayee.id, transfer_id: from.id, ...category },
+          ],
+          from.id,
+          to.id,
+        );
+      }),
+
+    /**
+     * Break the pairing between two legs, leaving **both transactions in
+     * place**. Actual's own removal path (clearing a transfer payee through the
+     * UI) runs `removeTransfer`, which *deletes* the counterpart; here the
+     * counterpart is usually a real imported row from the other account, and
+     * deleting someone's transaction to undo a mislink is not a trade this
+     * server makes.
+     *
+     * The payee is cleared alongside `transfer_id`, not left behind: a
+     * transaction that still names a transfer payee but has no counterpart is
+     * exactly the state `onUpdate` treats as "needs a leg", so the next edit
+     * through Actual would silently insert one in the other account.
+     */
+    unlinkTransfer: (transactionId) =>
+      client.read(async () => {
+        const [row] = await readByIds([transactionId]);
+        if (!row) {
+          throw new Error(`No transaction found with id "${transactionId}"`);
+        }
+        if (!row.transfer_id) {
+          throw new Error(`Transaction "${transactionId}" is not linked to another transaction as a transfer.`);
+        }
+        // The counterpart can legitimately be gone — deleted from the other
+        // account by another client — and this side still needs clearing.
+        const counterpartId = row.transfer_id;
+        const [counterpart] = await readByIds([counterpartId]);
+        const clear = (id: string): TransferPatch => ({ id, payee: null, transfer_id: null });
+        return applyTransferPatch(
+          counterpart ? [clear(row.id), clear(counterpart.id)] : [clear(row.id)],
+          row.id,
+          counterpart ? counterpartId : undefined,
+        );
       }),
   };
 }

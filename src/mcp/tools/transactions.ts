@@ -142,5 +142,59 @@ export function transactionTools(repos: Pick<ActualRepos, 'transactions'>): Tool
         return { transaction };
       },
     }),
+
+    defineTool({
+      name: 'link_transfer',
+      title: 'Link two transactions as a transfer',
+      description:
+        'Mark two existing transactions as the two halves of one transfer between accounts — the same operation ' +
+        'as "Make transfer" in Actual. Each transaction’s payee becomes the other account’s transfer payee and ' +
+        'the two are linked, so the movement stops counting as spending or income.\n' +
+        'Requirements, all enforced: two different transactions, in two different accounts, whose amounts cancel ' +
+        'out exactly (e.g. -5000 and 5000), neither already linked, neither a split parent. Find the pair with ' +
+        '`search_transactions` — a matching date range plus `amountMin`/`amountMax` is the usual way.\n' +
+        'When only one side exists (the other account has not imported it, or is not tracked here), do NOT use ' +
+        'this tool: call `update_transaction` with `payeeId` set to the destination account’s transfer payee ' +
+        '(the payee whose `transferAccountId` is that account, from `list_payees`), and Actual will create the ' +
+        'matching transaction in that account itself.\n' +
+        'If both accounts sit on the same side of the budget (both on-budget or both off-budget) the category is ' +
+        'cleared from both legs, as Actual does for transfers it creates itself. Returns both transactions as ' +
+        'stored afterwards.',
+      inputSchema: {
+        transactionId: idSchema.describe('One side of the transfer.'),
+        counterpartId: idSchema.describe(
+          'The other side: a transaction in a different account for the opposite amount.',
+        ),
+      },
+      write: true,
+      destructive: true,
+      run: async (args) => {
+        const { transactionId, counterpartId } = z
+          .object({ transactionId: idSchema, counterpartId: idSchema })
+          .parse(args);
+        return repos.transactions.linkTransfer(transactionId, counterpartId);
+      },
+    }),
+
+    defineTool({
+      name: 'unlink_transfer',
+      title: 'Unlink a transfer',
+      description:
+        'Break the link between the two halves of a transfer, given either half. Both transactions are kept — ' +
+        'this undoes the pairing, it does not delete anything — and both have their transfer payee cleared along ' +
+        'with the link, because a transaction that still names a transfer payee with no counterpart makes Actual ' +
+        'recreate the missing leg on the next edit. Their categories are left as they are, so a transfer that was ' +
+        'really spending needs recategorizing afterwards with `update_transaction`. ' +
+        'Errors if the transaction is not part of a transfer.',
+      inputSchema: {
+        transactionId: idSchema.describe('Either half of the transfer to unlink.'),
+      },
+      write: true,
+      destructive: true,
+      run: async (args) => {
+        const { transactionId } = z.object({ transactionId: idSchema }).parse(args);
+        return repos.transactions.unlinkTransfer(transactionId);
+      },
+    }),
   ] as ToolDefinition[];
 }

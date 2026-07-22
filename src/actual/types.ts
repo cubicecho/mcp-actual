@@ -91,8 +91,23 @@ export interface Transaction extends Money {
   /** The payee string as the bank sent it, before any rule rewrote it. */
   importedPayee?: string;
   transferAccountId?: string;
+  /**
+   * The id of the other leg when this transaction is one half of a transfer.
+   * Set together with a transfer payee: `transferAccountId` says "this looks
+   * like a transfer to that account", `transferId` says which transaction it is
+   * actually paired with.
+   */
+  transferId?: string;
   isParent: boolean;
   isChild: boolean;
+}
+
+/** Both legs of a transfer after linking or unlinking, as Actual stored them. */
+export interface TransferPair {
+  /** The transaction the caller named. */
+  transaction: Transaction;
+  /** Its counterpart. Absent after an unlink whose other leg no longer exists. */
+  counterpart?: Transaction;
 }
 
 /** A page of transactions, with an explicit truncation flag — silent caps read as "that's all of them". */

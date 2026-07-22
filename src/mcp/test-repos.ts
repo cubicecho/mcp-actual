@@ -55,6 +55,8 @@ export function stubRepos(overrides: Partial<{ [K in keyof ActualRepos]: Partial
       search: unimplemented('transactions.search'),
       listForAccount: unimplemented('transactions.listForAccount'),
       update: unimplemented('transactions.update'),
+      linkTransfer: unimplemented('transactions.linkTransfer'),
+      unlinkTransfer: unimplemented('transactions.unlinkTransfer'),
     },
   };
 

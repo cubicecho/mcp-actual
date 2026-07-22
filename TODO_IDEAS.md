@@ -65,6 +65,20 @@ every other mutation — not a separate tier.
 - **Transaction creation / import** (`addTransactions`, `importTransactions`) —
   useful for cash entry and CSV import, but a much larger validation surface
   (split transactions, transfer semantics, dedupe by `imported_id`).
+- **Finding transfer candidates automatically** — a read tool that scans for
+  unlinked pairs in different accounts whose amounts cancel within a few days.
+  Rejected for now because `search_transactions` already answers it (a date
+  window plus `amountMin`/`amountMax` equal to the negated amount), and a
+  heuristic pairing tool feeding an irreversible-ish write wants review of each
+  pair anyway — which is the manual search. Revisit if the search round-trips
+  turn out to be expensive in practice.
+- **Deleting the orphan leg on unlink** — `unlink_transfer` deliberately keeps
+  both transactions, unlike Actual's `removeTransfer`, which deletes the
+  counterpart. When the counterpart was one Actual auto-created (from setting a
+  transfer payee on a single transaction), unlinking leaves a payee-less
+  orphan. Deleting it would need a delete path, which decision 2 in SPECS.md
+  rules out for this pass; the tool description says what it leaves behind
+  instead.
 - **Multi-budget support** — the server opens exactly one budget, fixed by
   `ACTUAL_SYNC_ID`. `getBudgets` / `loadBudget` could let one server expose
   several, at the cost of the budget no longer being a process-wide constant.

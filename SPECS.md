@@ -197,10 +197,63 @@ candidates instead of scanning hundreds of names.
 | `search_transactions` | `aqlQuery` — filter by date range, account, payee, category, notes, amount range, cleared/reconciled; capped result count | R |
 | `get_transactions` | `getTransactions` (single account + date range, as the API defines it) | R |
 | `update_transaction` | `updateTransaction` (category, payee, notes, cleared) | W |
+| `link_transfer` | `send('transactions-batch-update')` with `runTransfers: false` | W |
+| `unlink_transfer` | same | W |
 
 `search_transactions` is the workhorse for payee cleanup: `getTransactions`
 alone cannot answer a cross-account question, which is exactly the shape of
 "where else does this payee appear?".
+
+#### Transfers
+
+Actual has two different operations that both produce a transfer, and only one
+of them is reachable through the public API:
+
+- **Creating the missing side.** Setting a transaction's payee to an account's
+  transfer payee runs the engine's `addTransfer`, which *inserts* a
+  counter-transaction in that account and links the two. This already works
+  through `update_transaction` — `list_payees` reports `transferAccountId`, so
+  the transfer payee is addressable — and `link_transfer` points at it rather
+  than duplicating it.
+- **Pairing two rows that already exist** — Actual's "Make transfer". Both
+  accounts imported the same movement, so inserting a third transaction is
+  wrong; the two existing rows must be pointed at each other. `@actual-app/api`
+  exposes no function for this, so `link_transfer` goes through the
+  `transactions-batch-update` handler, which `Handlers` types.
+
+The shape of both tools comes from the bundled engine (`transactions/transfer.ts`):
+
+- **`runTransfers: false` is load-bearing on every transfer write.** With the
+  default on, `onUpdate` sees a transfer payee plus a `transfer_id` and calls
+  `updateTransfer`, which overwrites the counterpart's account, amount and notes
+  from the leg being written — so linking two real imported transactions would
+  rewrite one of them. Both legs are set explicitly here; the engine has nothing
+  left to derive.
+- **A leg's payee is the *other* account's transfer payee.** `addTransfer` gives
+  the row it creates in account B the payee whose `transfer_acct` is A. Getting
+  this backwards produces a pair that links but reads as a self-transfer.
+- **Validation mirrors loot-core's `validForTransfer`** (different accounts,
+  amounts summing to zero, neither already linked), plus a split-parent check
+  that `validForTransfer` omits: `addTransfer` returns early for a parent and
+  `onUpdate` strips a transfer from one, so a parent can never be a leg.
+- **Categories are cleared exactly where the engine clears them.**
+  `clearCategory` only nulls the category when both accounts are on the same
+  side of the budget; between an on-budget and an off-budget account the
+  movement *is* budget-relevant and Actual keeps it. Both branches are mirrored.
+- **Unlinking keeps both transactions.** Actual's own removal path
+  (`removeTransfer`, triggered by clearing a transfer payee) *deletes* the
+  counterpart. Here the counterpart is a real imported row from the other
+  account, and deleting someone's transaction to undo a mislink is not a trade
+  this server makes — which also keeps it inside decision 2, no delete tools.
+- **Unlinking clears the payee alongside `transfer_id`.** A transaction that
+  still names a transfer payee with no counterpart is exactly the state
+  `onUpdate` reads as "needs a leg", so the next edit through Actual would
+  silently insert one in the other account.
+
+`Transaction` therefore carries `transferId` as well as `transferAccountId`:
+the payee says "this looks like a transfer to that account", the id says which
+row it is actually paired with, and `unlink_transfer` is unusable without being
+able to see it.
 
 ### Budgets & categories
 

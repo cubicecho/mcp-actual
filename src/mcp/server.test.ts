@@ -391,6 +391,100 @@ describe('createActualServer', () => {
     });
   });
 
+  describe('transfers', () => {
+    const PAIR = {
+      transaction: {
+        id: 't-out',
+        date: '2026-07-01',
+        amount: -5000,
+        amountDecimal: -50,
+        accountId: 'a-checking',
+        transferId: 't-in',
+        cleared: true,
+        reconciled: false,
+        isParent: false,
+        isChild: false,
+      },
+      counterpart: {
+        id: 't-in',
+        date: '2026-07-01',
+        amount: 5000,
+        amountDecimal: 50,
+        accountId: 'a-savings',
+        transferId: 't-out',
+        cleared: true,
+        reconciled: false,
+        isParent: false,
+        isChild: false,
+      },
+    };
+
+    it('links two transactions and returns both legs', async () => {
+      let seen: unknown;
+      const client = await connect(
+        stubRepos({
+          transactions: {
+            linkTransfer: async (transactionId, counterpartId) => {
+              seen = [transactionId, counterpartId];
+              return PAIR;
+            },
+          },
+        }),
+      );
+      const result = await client.callTool({
+        name: 'link_transfer',
+        arguments: { transactionId: 't-out', counterpartId: 't-in' },
+      });
+      expect(result.isError).toBeFalsy();
+      expect(JSON.parse(textOf(result))).toEqual(PAIR);
+      expect(seen).toEqual(['t-out', 't-in']);
+    });
+
+    it('reports a rejected pairing as a tool error, not a transport failure', async () => {
+      const client = await connect(
+        stubRepos({
+          transactions: {
+            linkTransfer: async () => {
+              throw new Error('Cannot link: the amounts must cancel out');
+            },
+          },
+        }),
+      );
+      const result = await client.callTool({
+        name: 'link_transfer',
+        arguments: { transactionId: 't-out', counterpartId: 't-in' },
+      });
+      expect(result.isError).toBe(true);
+      expect(textOf(result)).toMatch(/amounts must cancel out/);
+    });
+
+    it('refuses an id that could widen the lookup beyond the ids given', async () => {
+      const client = await connect(stubRepos({ transactions: { linkTransfer: async () => PAIR } }));
+      const result = await client.callTool({
+        name: 'link_transfer',
+        arguments: { transactionId: "x') OR 1=1 --", counterpartId: 't-in' },
+      });
+      expect(result.isError).toBe(true);
+    });
+
+    it('unlinks from either half', async () => {
+      let seen: unknown;
+      const client = await connect(
+        stubRepos({
+          transactions: {
+            unlinkTransfer: async (transactionId) => {
+              seen = transactionId;
+              return { transaction: PAIR.counterpart, counterpart: PAIR.transaction };
+            },
+          },
+        }),
+      );
+      const result = await client.callTool({ name: 'unlink_transfer', arguments: { transactionId: 't-in' } });
+      expect(result.isError).toBeFalsy();
+      expect(seen).toBe('t-in');
+    });
+  });
+
   describe('the write gate', () => {
     const writeTools = [
       'update_transaction',
@@ -401,6 +495,8 @@ describe('createActualServer', () => {
       'create_category_group',
       'update_category_group',
       'apply_rule_actions',
+      'link_transfer',
+      'unlink_transfer',
     ];
 
     it('advertises write tools when writes are enabled', async () => {

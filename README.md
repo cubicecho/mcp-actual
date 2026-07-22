@@ -31,6 +31,8 @@ they are not advertised at all.
 | `search_transactions` | | Cross-account search by date, account, payee, category, notes, amount, and cleared state. |
 | `get_transactions` | | Every transaction in one account between two dates, uncapped. |
 | `update_transaction` | ✏️ | Change a transaction's category, payee, notes, cleared flag, date, or amount. |
+| `link_transfer` | ✏️ | Mark two existing transactions as the two halves of one transfer between accounts. |
+| `unlink_transfer` | ✏️ | Break a transfer pairing, keeping both transactions. |
 
 **Payees**
 
