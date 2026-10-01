@@ -20,6 +20,7 @@ const baseConfig: Config = {
   authToken: null,
   enableWrites: true,
   timeoutMs: 120_000,
+  keepAliveTimeoutMs: 75_000,
 };
 
 function app(config: Partial<Config> = {}) {

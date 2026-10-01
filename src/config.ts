@@ -36,6 +36,13 @@ const configSchema = z.object({
    * whole server, permanently.
    */
   timeoutMs: z.number().int().min(1000),
+  /**
+   * Idle time before a keep-alive connection is closed; `0` never closes one.
+   * Node's 5 s is shorter than the gap between two tool calls, and shorter than
+   * the 60 s nginx and ALB hold their side, which is how a proxy ends up
+   * reusing a connection the server is closing and answering 502.
+   */
+  keepAliveTimeoutMs: z.number().int().nonnegative(),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -87,6 +94,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     // gate exists to be turned *off* deliberately for read-only deployments.
     enableWrites: envBoolean(env, 'ACTUAL_ENABLE_WRITES', true),
     timeoutMs: Number(envValue(env, 'ACTUAL_TIMEOUT_MS') ?? 120_000),
+    keepAliveTimeoutMs: Number(envValue(env, 'HTTP_KEEP_ALIVE_TIMEOUT_MS') ?? 75_000),
   });
   if (!parsed.success) {
     const issues = parsed.error.issues.map(
@@ -132,4 +140,5 @@ const ENV_KEYS: Record<string, string> = {
   authToken: 'MCP_ACTUAL_TOKEN',
   enableWrites: 'ACTUAL_ENABLE_WRITES',
   timeoutMs: 'ACTUAL_TIMEOUT_MS',
+  keepAliveTimeoutMs: 'HTTP_KEEP_ALIVE_TIMEOUT_MS',
 };

@@ -45,6 +45,8 @@ async function main(): Promise<void> {
     }
   });
 
+  httpServer.keepAliveTimeout = config.keepAliveTimeoutMs;
+
   httpServer.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'EADDRINUSE') {
       console.error(`Port ${config.port} is already in use. Set PORT to a free port and restart.`);
