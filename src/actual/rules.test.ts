@@ -1,5 +1,29 @@
-import { describe, expect, it } from 'vitest';
-import { diffTransaction } from './rules.ts';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const getPayees = vi.fn();
+const getCategories = vi.fn();
+const getRules = vi.fn();
+const aqlQuery = vi.fn();
+
+vi.mock('@actual-app/api', () => ({
+  getPayees: () => getPayees(),
+  getCategories: () => getCategories(),
+  getRules: () => getRules(),
+  aqlQuery: (...args: unknown[]) => aqlQuery(...args),
+  q: () => {
+    const chain = {
+      filter: () => chain,
+      select: () => chain,
+      orderBy: () => chain,
+      limit: () => chain,
+      offset: () => chain,
+    };
+    return chain;
+  },
+  utils: { integerToAmount: (cents: number) => cents / 100 },
+}));
+
+const { createRulesRepo, diffTransaction } = await import('./rules.ts');
 
 /** Resolve the two id-bearing fields the way the repo does, so tests read like the real output. */
 const NAMES = {
@@ -65,5 +89,42 @@ describe('diffTransaction', () => {
   it('ignores fields outside the diffed set', () => {
     const changes = diffTransaction(BEFORE, { ...BEFORE, reconciled: true, account: 'a-9' }, resolve);
     expect(changes).toEqual({});
+  });
+});
+
+describe('previewEffects payee-creation gate', () => {
+  const client = {
+    read: (fn: () => Promise<unknown>) => fn(),
+    run: (fn: () => Promise<unknown>) => fn(),
+    // rules-run returns the transaction unchanged, so the preview yields no
+    // entries — the gate is what these tests exercise, not the diff.
+    send: async (_name: string, args: { transaction: unknown }) => args.transaction,
+  };
+  const repo = createRulesRepo(client as unknown as Parameters<typeof createRulesRepo>[0]);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getPayees.mockResolvedValue([{ id: 'p-2', name: 'Amazon' }]);
+    getCategories.mockResolvedValue([{ id: 'c-1', name: 'Shopping' }]);
+    aqlQuery.mockResolvedValue({ data: [{ id: 't-1', date: '2026-07-01', amount: -2500, payee: 'p-2' }] });
+  });
+
+  it('allows a read-only preview when the only rename rule targets an EXISTING payee', async () => {
+    // Actual inserts a payee only when the target name does not already resolve,
+    // so a rename to a payee that exists is safe to preview even read-only.
+    getRules.mockResolvedValue([{ id: 'r-1', actions: [{ op: 'set', field: 'payee_name', value: 'Amazon' }] }]);
+    const preview = await repo.previewEffects({ limit: 100 }, { allowPayeeCreation: false });
+    expect(preview.createsPayees).toEqual([]);
+  });
+
+  it('refuses a read-only preview when a rename rule targets a NEW payee name', async () => {
+    getRules.mockResolvedValue([{ id: 'r-2', actions: [{ op: 'set', field: 'payee_name', value: 'BrandNewCo' }] }]);
+    await expect(repo.previewEffects({ limit: 100 }, { allowPayeeCreation: false })).rejects.toThrow(/Cannot preview/);
+  });
+
+  it('reports a would-create rule but proceeds when writes are allowed', async () => {
+    getRules.mockResolvedValue([{ id: 'r-2', actions: [{ op: 'set', field: 'payee_name', value: 'BrandNewCo' }] }]);
+    const preview = await repo.previewEffects({ limit: 100 }, { allowPayeeCreation: true });
+    expect(preview.createsPayees).toEqual(['r-2']);
   });
 });

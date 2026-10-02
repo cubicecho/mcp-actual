@@ -240,7 +240,10 @@ export function createBudgetsRepo(client: ActualClient): BudgetsRepo {
      * in the tool description rather than left invisible.
      */
     setCarryover: (month, categoryId, flag) =>
-      client.run(async () => {
+      // `read` so the post-write read-back is synced, matching every other
+      // budget method here; on `run` it could report a category snapshot stale
+      // relative to concurrent changes from another client.
+      client.read(async () => {
         await api.setBudgetCarryover(month, categoryId, flag);
         return readBudgetCategory(month, categoryId);
       }),

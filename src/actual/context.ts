@@ -1,5 +1,4 @@
 import * as api from '@actual-app/api';
-import { errorChainMessage } from '../errors.ts';
 import type { ActualClient } from './client.ts';
 import { money } from './money.ts';
 import type { Schedule, Tag } from './types.ts';
@@ -77,20 +76,18 @@ export function createContextRepo(client: ActualClient): ContextRepo {
      */
     resolveNameToId: (type, name) =>
       client.read(async () => {
-        try {
-          const id = await api.getIDByName(type, name);
-          return id ?? null;
-        } catch (cause) {
-          // Only "no such entity" may become a null answer. The handler throws
-          // the same way for a closed budget or a query failure, and swallowing
-          // those made "the budget is not open" look identical to "does not
-          // exist" — on which an agent would go on to create a duplicate.
-          const message = errorChainMessage(cause);
-          if (/^Not found:/.test(message)) {
-            return null;
-          }
-          throw new Error(`Failed to resolve ${type} named "${name}": ${message}`, { cause });
-        }
+        // Query directly instead of via `getIDByName`, whose only signal for
+        // "no match" is a thrown APIError with a human-readable message —
+        // matching that string coupled us to the library's exact wording, so a
+        // closed budget or query error could be mistaken for "does not exist"
+        // (or a reworded miss for a real failure). `getIDByName` itself is just
+        // this query throwing on an empty result; here an empty result *is* the
+        // null answer, and any real failure throws from `aqlQuery` and
+        // propagates. Matching stays identical (same view, same `name` filter).
+        const { data } = (await api.aqlQuery(api.q(type).filter({ name }).select(['id']))) as {
+          data: { id: string }[];
+        };
+        return data[0]?.id ?? null;
       }),
 
     listSchedules: () =>

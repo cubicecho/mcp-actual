@@ -1,9 +1,24 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getTransactions = vi.fn();
+const updateTransaction = vi.fn();
+const aqlQuery = vi.fn();
 
 vi.mock('@actual-app/api', () => ({
   getTransactions: (...args: unknown[]) => getTransactions(...args),
+  updateTransaction: (...args: unknown[]) => updateTransaction(...args),
+  aqlQuery: (...args: unknown[]) => aqlQuery(...args),
+  q: () => {
+    const chain = {
+      filter: () => chain,
+      select: () => chain,
+      orderBy: () => chain,
+      options: () => chain,
+      limit: () => chain,
+      offset: () => chain,
+    };
+    return chain;
+  },
   // `money()` converts through the library's own helper; the real one is a
   // plain divide, so mirroring it keeps the mapped amounts meaningful here.
   utils: { integerToAmount: (cents: number) => cents / 100 },
@@ -78,7 +93,7 @@ describe('listForAccount', () => {
     run: (fn: () => Promise<unknown>) => fn(),
   } as Parameters<typeof createTransactionsRepo>[0]);
 
-  it('flattens split legs, which arrive nested rather than as rows', () => {
+  it('flattens split legs, which arrive nested rather than as rows', async () => {
     // `api/transactions-get` queries with `splits: 'grouped'`, so the legs live
     // in `subtransactions` — mapping only the top level loses them entirely.
     getTransactions.mockResolvedValue([
@@ -95,15 +110,47 @@ describe('listForAccount', () => {
         ],
       },
     ]);
-    return repo.listForAccount('a-1', '2026-07-01', '2026-07-31').then((rows) => {
-      expect(rows.map((row) => row.id)).toEqual(['t-1', 't-2', 't-2a', 't-2b']);
-      expect(rows.find((row) => row.id === 't-2')?.isParent).toBe(true);
-      expect(rows.find((row) => row.id === 't-2a')?.categoryId).toBe('c-1');
-    });
+    const rows = await repo.listForAccount('a-1', '2026-07-01', '2026-07-31');
+    expect(rows.map((row) => row.id)).toEqual(['t-1', 't-2', 't-2a', 't-2b']);
+    expect(rows.find((row) => row.id === 't-2')?.isParent).toBe(true);
+    expect(rows.find((row) => row.id === 't-2a')?.categoryId).toBe('c-1');
   });
 
   it('handles a plain account with no splits', async () => {
     getTransactions.mockResolvedValue([{ id: 't-9', date: '2026-07-01', amount: -100, account: 'a-1' }]);
     expect((await repo.listForAccount('a-1', '2026-07-01', '2026-07-31')).map((row) => row.id)).toEqual(['t-9']);
+  });
+});
+
+describe('update', () => {
+  const repo = createTransactionsRepo({
+    read: (fn: () => Promise<unknown>) => fn(),
+    run: (fn: () => Promise<unknown>) => fn(),
+  } as Parameters<typeof createTransactionsRepo>[0]);
+
+  beforeEach(() => vi.clearAllMocks());
+
+  it('waits for a category change to land before returning, despite the stale-read race', async () => {
+    // api/transaction-update does not await its write, so the first read-back
+    // can still show the OLD category. `category` comes back as a { id, name }
+    // object, so the poll must compare by id — comparing object identity would
+    // see a "change" immediately and return the stale row.
+    const stale = { id: 't-1', date: '2026-07-01', amount: -100, category: { id: 'c-old', name: 'Old' } };
+    const fresh = { id: 't-1', date: '2026-07-01', amount: -100, category: { id: 'c-new', name: 'New' } };
+    // before, then post-update: stale, stale, then fresh — the poll must keep going.
+    aqlQuery
+      .mockResolvedValueOnce({ data: [stale] }) // before
+      .mockResolvedValueOnce({ data: [stale] }) // first read-back (write not landed)
+      .mockResolvedValueOnce({ data: [stale] }) // still not landed
+      .mockResolvedValue({ data: [fresh] }); // landed
+    const result = await repo.update('t-1', { categoryId: 'c-new' });
+    expect(result?.categoryId).toBe('c-new');
+    expect(updateTransaction).toHaveBeenCalledWith('t-1', { category: 'c-new' });
+  });
+
+  it('returns null for an id that does not exist', async () => {
+    aqlQuery.mockResolvedValue({ data: [] });
+    expect(await repo.update('nope', { notes: 'x' })).toBeNull();
+    expect(updateTransaction).not.toHaveBeenCalled();
   });
 });

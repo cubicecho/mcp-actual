@@ -68,10 +68,20 @@ export class ActualClient {
         ),
       );
     }
+    // Resolves when this operation is actually dequeued and begins running, so
+    // the deadline can measure execution time rather than time spent waiting in
+    // the queue behind other work. Timing from enqueue would let a burst of
+    // healthy-but-slow calls push a queued one past its deadline and trip the
+    // `stalled` latch, rejecting everything after it though nothing is hung.
+    let markStarted!: () => void;
+    const execStarted = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
     const started = this.queue.then(async () => {
       if (this.shuttingDown) {
         throw new Error('Actual client is shutting down');
       }
+      markStarted();
       await this.ensureReady();
       return fn();
     });
@@ -82,29 +92,44 @@ export class ActualClient {
     // would break the serialization this class exists to provide.
     this.queue = started.catch(() => {});
 
-    return this.withDeadline(started, timeoutMs);
+    return this.withDeadline(started, execStarted, timeoutMs);
   }
 
   /**
-   * Reject the caller once `timeoutMs` elapses, while leaving the underlying
-   * operation to finish on its own. The client is marked stalled meanwhile, so
-   * later calls fail immediately instead of queueing invisibly, and recovers by
-   * itself if the operation eventually settles.
+   * Reject the caller once `timeoutMs` elapses **from when the operation begins
+   * executing** (`execStarted`), while leaving the underlying operation to
+   * finish on its own. The client is marked stalled meanwhile, so later calls
+   * fail immediately instead of queueing invisibly, and recovers by itself if
+   * the operation eventually settles.
    */
-  private withDeadline<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+  private withDeadline<T>(operation: Promise<T>, execStarted: Promise<void>, timeoutMs: number): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.stalled = true;
-        reject(new Error(`Actual operation timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
-      timer.unref?.();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let done = false;
+      // Arm the timer only once the operation is running. If it has already
+      // finished (or never started, e.g. shutdown threw before dequeue), don't
+      // arm a stray timer that would falsely mark the client stalled.
+      execStarted.then(() => {
+        if (done) {
+          return;
+        }
+        timer = setTimeout(() => {
+          this.stalled = true;
+          reject(new Error(`Actual operation timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+        timer.unref?.();
+      });
       operation.then(
         (value) => {
+          // Clears `stalled` even after a timeout already rejected the caller,
+          // so a slow operation that eventually settles lets the client recover.
+          done = true;
           clearTimeout(timer);
           this.stalled = false;
           resolve(value);
         },
         (err: unknown) => {
+          done = true;
           clearTimeout(timer);
           this.stalled = false;
           reject(err as Error);

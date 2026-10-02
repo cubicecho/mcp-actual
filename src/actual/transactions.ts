@@ -275,11 +275,19 @@ export function createTransactionsRepo(client: ActualClient): TransactionsRepo {
         if (!before) {
           return null;
         }
+        // Reduce a field to a comparable scalar. `category`/`payee`/`account`
+        // come back as `{ id, name }` objects (SELECT_FIELDS pairs each with its
+        // dotted `.name`), so two reads of the *same* value are distinct object
+        // instances — comparing them by identity would report a change on every
+        // poll and defeat the wait below. Compare by id, which is also what the
+        // patch holds for those fields.
+        const readValue = (row: TransactionRow | undefined, key: string): unknown => {
+          const value = (row as RawEntity | undefined)?.[key] ?? null;
+          return value !== null && typeof value === 'object' ? ((value as { id?: unknown }).id ?? null) : value;
+        };
         // Which fields this patch would actually change. Comparing against
         // these is how we know the write landed, below.
-        const fieldOf = (row: TransactionRow | undefined, key: string): unknown =>
-          (row as RawEntity | undefined)?.[key] ?? null;
-        const pending = Object.keys(patch).filter((key) => fieldOf(before, key) !== (patch[key] ?? null));
+        const pending = Object.keys(patch).filter((key) => readValue(before, key) !== (patch[key] ?? null));
 
         await api.updateTransaction(id, patch);
 
@@ -290,7 +298,7 @@ export function createTransactionsRepo(client: ActualClient): TransactionsRepo {
         // a targeted field moves rather than trusting the ordering.
         let row = await readRow();
         for (let attempt = 0; pending.length > 0 && attempt < 20; attempt++) {
-          const landed = pending.some((key) => fieldOf(row, key) !== fieldOf(before, key));
+          const landed = pending.some((key) => readValue(row, key) !== readValue(before, key));
           if (landed) {
             break;
           }

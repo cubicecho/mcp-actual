@@ -70,4 +70,20 @@ describe('ActualClient timeouts', () => {
     await expect(client(5000).read(async () => 'value')).resolves.toBe('value');
     expect(sync).toHaveBeenCalled();
   });
+
+  it('does not count queue wait against a later operation’s deadline', async () => {
+    // The deadline measures execution time, not time spent waiting in the
+    // serialized queue. A first op that runs close to (but under) its limit
+    // must not consume a queued second op's budget while it waits — timing from
+    // enqueue would spuriously time out B and trip the stalled latch.
+    // 1000ms is the smallest configurable deadline. A runs ~900ms (under it);
+    // B queues behind A and needs ~900ms of its own. Timing from enqueue would
+    // give B ~100ms before its timer fired → spurious timeout; timing from
+    // execution gives B its full budget once it starts.
+    const c = client(1000);
+    const a = c.run(() => new Promise((resolve) => setTimeout(() => resolve('a'), 900)));
+    const b = c.run(() => new Promise((resolve) => setTimeout(() => resolve('b'), 900)));
+    expect(await a).toBe('a');
+    expect(await b).toBe('b');
+  });
 });
