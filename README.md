@@ -150,6 +150,7 @@ fill in the three required values. `docker compose` reads that same `.env`.
 | `ACTUAL_ENABLE_WRITES` | | `true` | `false` serves only read-only tools; write tools are not advertised at all |
 | `DATA_DIR` | | `./data` (`/data` in Docker) | Where the downloaded budget is cached |
 | `PORT` | | `3000` | HTTP port |
+| `HTTP_KEEP_ALIVE_TIMEOUT_MS` | | `75000` | How long an idle client connection is kept open. Above the 60 s nginx and ALB hold theirs; raise it behind a proxy that holds longer. `0` never closes one |
 
 Missing or malformed values are reported at startup with every offending
 variable named at once.

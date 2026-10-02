@@ -93,6 +93,25 @@ describe('loadConfig', () => {
     });
   });
 
+  describe('the keep-alive timeout', () => {
+    it('defaults to longer than a reverse proxy holds its side', () => {
+      expect(loadConfig(validEnv).keepAliveTimeoutMs).toBe(75_000);
+    });
+
+    it('reads an explicit timeout, zero included', () => {
+      expect(loadConfig({ ...validEnv, HTTP_KEEP_ALIVE_TIMEOUT_MS: '120000' }).keepAliveTimeoutMs).toBe(120_000);
+      expect(loadConfig({ ...validEnv, HTTP_KEEP_ALIVE_TIMEOUT_MS: '0' }).keepAliveTimeoutMs).toBe(0);
+    });
+
+    it('rejects a value that is not a whole number of ms', () => {
+      for (const value of ['soon', '-1', '1.5']) {
+        expect(() => loadConfig({ ...validEnv, HTTP_KEEP_ALIVE_TIMEOUT_MS: value })).toThrowError(
+          /HTTP_KEEP_ALIVE_TIMEOUT_MS/,
+        );
+      }
+    });
+  });
+
   it('rejects a server url that is not a url', () => {
     expect(() => loadConfig({ ...validEnv, ACTUAL_SERVER_URL: 'budget.example.com' })).toThrowError(
       /ACTUAL_SERVER_URL/,
