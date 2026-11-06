@@ -43,6 +43,12 @@ const configSchema = z.object({
    * reusing a connection the server is closing and answering 502.
    */
   keepAliveTimeoutMs: z.number().int().nonnegative(),
+  /**
+   * Announces the server on the local network over mDNS (`_mcp._tcp`), so an
+   * mcp-router there can find it. The discovery documents it points at are
+   * served either way; this only controls the announcement.
+   */
+  lanAdvertise: z.boolean(),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -95,6 +101,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     enableWrites: envBoolean(env, 'ACTUAL_ENABLE_WRITES', true),
     timeoutMs: Number(envValue(env, 'ACTUAL_TIMEOUT_MS') ?? 120_000),
     keepAliveTimeoutMs: Number(envValue(env, 'HTTP_KEEP_ALIVE_TIMEOUT_MS') ?? 75_000),
+    // Off unless asked for: announcing a finance server to the whole LAN is a choice.
+    lanAdvertise: envBoolean(env, 'MCP_LAN_ADVERTISE', false),
   });
   if (!parsed.success) {
     const issues = parsed.error.issues.map(
@@ -141,4 +149,5 @@ const ENV_KEYS: Record<string, string> = {
   enableWrites: 'ACTUAL_ENABLE_WRITES',
   timeoutMs: 'ACTUAL_TIMEOUT_MS',
   keepAliveTimeoutMs: 'HTTP_KEEP_ALIVE_TIMEOUT_MS',
+  lanAdvertise: 'MCP_LAN_ADVERTISE',
 };

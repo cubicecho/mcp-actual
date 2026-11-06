@@ -21,6 +21,7 @@ const baseConfig: Config = {
   enableWrites: true,
   timeoutMs: 120_000,
   keepAliveTimeoutMs: 75_000,
+  lanAdvertise: false,
 };
 
 function app(config: Partial<Config> = {}) {

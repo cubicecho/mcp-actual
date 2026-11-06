@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { RequestHandler } from 'express';
+import type { Config } from './config.ts';
 
 export interface AuthConfig {
   enabled: boolean;
@@ -16,6 +17,17 @@ const TRUTHY_ENV = new Set(['1', 'true', 'yes', 'on']);
 export function authDisabledByEnv(env: NodeJS.ProcessEnv = process.env): boolean {
   const value = env.SECURE_LOCAL_NET;
   return value !== undefined && TRUTHY_ENV.has(value.trim().toLowerCase());
+}
+
+/**
+ * Whether bearer auth is actually on: a token is configured and SECURE_LOCAL_NET has not turned it off.
+ *
+ * @param config - Where the token comes from.
+ * @param [env] - The environment SECURE_LOCAL_NET is read from, on every call.
+ * @returns true when `/mcp` asks for the token.
+ */
+export function isAuthEffective(config: Pick<Config, 'authToken'>, env: NodeJS.ProcessEnv = process.env): boolean {
+  return config.authToken !== null && authDisabledByEnv(env) === false;
 }
 
 /** Constant-time comparison that does not leak token length (compares sha256 digests). */

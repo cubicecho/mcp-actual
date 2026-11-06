@@ -1,7 +1,9 @@
+import { discoveryMiddleware } from '@cubicecho/mcp-discovery';
 import express from 'express';
 import type { ActualRepos } from './actual/index.ts';
-import { authDisabledByEnv, createAuthMiddleware } from './auth.ts';
+import { createAuthMiddleware, isAuthEffective } from './auth.ts';
 import type { Config } from './config.ts';
+import { discoveryEndpoints } from './discovery/endpoints.ts';
 import { errorMessage, HttpError } from './errors.ts';
 import { createMcpRouter } from './mcp/routes.ts';
 import { SERVER_VERSION } from './version.ts';
@@ -11,17 +13,22 @@ export interface AppDeps {
   config: Config;
 }
 
-/** Build the Express app (separate from listen() so tests can drive it with supertest). */
+/**
+ * Builds the Express app: the public discovery documents and status probe, then `/mcp` behind bearer auth.
+ *
+ * @param deps - The repos the tools read and write, and the config.
+ * @returns The app, separate from `listen()` so tests can drive it with supertest.
+ */
 export function buildApp(deps: AppDeps): express.Express {
   const { repos, config } = deps;
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '1mb' }));
 
-  const auth = createAuthMiddleware(() => ({
-    enabled: config.authToken !== null && !authDisabledByEnv(),
-    token: config.authToken,
-  }));
+  const auth = createAuthMiddleware(() => ({ enabled: isAuthEffective(config), token: config.authToken }));
+
+  // Public by design, so ahead of the auth guard: the AI Catalog and the Server Card for /mcp.
+  app.use(discoveryMiddleware(() => discoveryEndpoints(config)));
 
   // Unauthenticated liveness probe — reports nothing about the budget itself.
   app.get('/api/status', (_req, res) => {
