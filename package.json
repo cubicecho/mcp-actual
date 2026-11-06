@@ -31,7 +31,7 @@
   },
   "dependencies": {
     "@actual-app/api": "26.7.0",
-    "@cubicecho/mcp-discovery": "^0.2.0",
+    "@cubicecho/mcp-discovery": "^0.3.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "bonjour-service": "^1.4.4",
     "express": "^5.0.0",

@@ -1,5 +1,11 @@
 import { hostname } from 'node:os';
-import { type AdvertisedEndpoint, airIdentifier, createServerCard, type KeyValueInput } from '@cubicecho/mcp-discovery';
+import {
+  type AdvertisedEndpoint,
+  airIdentifier,
+  createServerCard,
+  hostSlug,
+  type KeyValueInput,
+} from '@cubicecho/mcp-discovery';
 import { isAuthEffective } from '../auth.ts';
 import type { Config } from '../config.ts';
 import { SERVER_VERSION } from '../version.ts';
@@ -22,9 +28,6 @@ const ENDPOINT_NAME = 'budget';
 /** What the card says the endpoint is for; a card description holds at most 100 characters. */
 const DESCRIPTION = 'An Actual Budget: accounts, transactions, payees, rules and budgets, served over MCP.';
 
-/** The slug used when nothing of the hostname survives. */
-const FALLBACK_HOST_SLUG = 'host';
-
 /** The header a client must send when bearer auth is on; its value is never in the card. */
 const AUTH_HEADER: KeyValueInput = {
   name: 'Authorization',
@@ -32,18 +35,6 @@ const AUTH_HEADER: KeyValueInput = {
   isRequired: true,
   isSecret: true,
 };
-
-/**
- * A hostname cut down to what a card name and a `urn:air` id allow: lowercase letters, digits and hyphens.
- *
- * @param name - The machine's hostname.
- * @returns E.g. `nas` for `NAS`, `my-box` for `my_box.lan`.
- */
-export function hostSlug(name: string): string {
-  const [first = ''] = name.toLowerCase().split('.');
-  const slug = first.replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
-  return slug === '' ? FALLBACK_HOST_SLUG : slug;
-}
 
 /**
  * The MCP endpoints this server makes discoverable: only `/mcp`.
