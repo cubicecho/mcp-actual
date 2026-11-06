@@ -31,9 +31,11 @@
   },
   "dependencies": {
     "@actual-app/api": "26.7.0",
-    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@cubicecho/mcp-discovery": "^0.2.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "bonjour-service": "^1.4.4",
     "express": "^5.0.0",
-    "zod": "^3.24.0"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.6",

@@ -1,3 +1,5 @@
+import { hostname } from 'node:os';
+import { createAdvertiser } from '@cubicecho/mcp-discovery/mdns';
 import { ActualClient, createRepos } from './actual/index.ts';
 import { buildApp } from './app.ts';
 import { loadConfig } from './config.ts';
@@ -21,6 +23,11 @@ async function main(): Promise<void> {
   });
 
   const app = buildApp({ repos: createRepos(client), config });
+  const advertiser = createAdvertiser({
+    isWanted: () => config.lanAdvertise,
+    options: () => ({ name: `MCP Actual on ${hostname()}`, port: config.port }),
+    log: console.log,
+  });
   const httpServer = app.listen(config.port, () => {
     console.log(`mcp-actual listening on http://localhost:${config.port} (data dir: ${config.dataDir})`);
     console.log(`Actual server: ${config.serverUrl}, budget sync id: ${config.syncId}`);
@@ -43,6 +50,13 @@ async function main(): Promise<void> {
           'for a read-only server.',
       );
     }
+    // When on, the advertiser logs the announcement itself.
+    const isAdvertisingOff = config.lanAdvertise === false;
+    if (isAdvertisingOff) {
+      console.log('LAN discovery: not advertising (set MCP_LAN_ADVERTISE=true to announce over mDNS)');
+    }
+    // After listen, so a router that finds the announcement can already read the catalog.
+    void advertiser.sync();
   });
 
   httpServer.keepAliveTimeout = config.keepAliveTimeoutMs;
@@ -62,8 +76,14 @@ async function main(): Promise<void> {
     }
     shuttingDown = true;
     console.log(`Received ${signal}; shutting down`);
-    httpServer.close();
-    client.close().finally(() => process.exit(0));
+    // First, so the goodbye goes out while the server can still answer.
+    advertiser
+      .close()
+      .catch((err: unknown) => console.warn(`LAN discovery: could not stop advertising: ${errorChainMessage(err)}`))
+      .finally(() => {
+        httpServer.close();
+        client.close().finally(() => process.exit(0));
+      });
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);

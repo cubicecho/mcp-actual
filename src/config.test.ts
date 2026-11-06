@@ -20,6 +20,15 @@ describe('loadConfig', () => {
     expect(config.timeoutMs).toBe(120_000);
     expect(config.encryptionPassword).toBeUndefined();
     expect(config.enableWrites).toBe(true);
+    expect(config.lanAdvertise).toBe(false);
+  });
+
+  it.each(['true', '1', 'yes', 'on'])('advertises on the LAN with MCP_LAN_ADVERTISE=%s', (value) => {
+    expect(loadConfig({ ...validEnv, MCP_LAN_ADVERTISE: value }).lanAdvertise).toBe(true);
+  });
+
+  it('rejects an unrecognized LAN advertising value rather than guessing', () => {
+    expect(() => loadConfig({ ...validEnv, MCP_LAN_ADVERTISE: 'ture' })).toThrowError(/MCP_LAN_ADVERTISE/);
   });
 
   it.each(['false', 'FALSE', '0', 'no', 'off'])('disables writes with ACTUAL_ENABLE_WRITES=%s', (value) => {

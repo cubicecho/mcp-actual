@@ -26,6 +26,16 @@ Single package, no workspaces: everything is under `src/`.
 - `src/mcp/routes.ts` — stateless streamable-HTTP transport at `/mcp`.
 - `src/app.ts` / `src/index.ts` — Express app and HTTP entry point.
 - `src/stdio.ts` — stdio entry point (`mcp-actual-stdio`).
+- `src/discovery/endpoints.ts` — the MCP Server Card for `/mcp`.
+
+The server is **discoverable**: `app.ts` serves the card and the AI Catalog at
+`/.well-known/ai-catalog.json` through `@cubicecho/mcp-discovery`'s
+`discoveryMiddleware`, mounted **ahead of the auth guard** because the documents
+are public. They never carry the token (a card just says `Authorization` is
+required when auth is on), the Actual server URL, or budget data. The mDNS
+announcement (`_mcp._tcp`) is opt-in: `MCP_LAN_ADVERTISE=true`, default false.
+`index.ts` starts it with `createAdvertiser` after `listen`, and closes it first
+on shutdown so the goodbye goes out.
 
 ## Commands
 

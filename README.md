@@ -151,6 +151,7 @@ fill in the three required values. `docker compose` reads that same `.env`.
 | `DATA_DIR` | | `./data` (`/data` in Docker) | Where the downloaded budget is cached |
 | `PORT` | | `3000` | HTTP port |
 | `HTTP_KEEP_ALIVE_TIMEOUT_MS` | | `75000` | How long an idle client connection is kept open. Above the 60 s nginx and ALB hold theirs; raise it behind a proxy that holds longer. `0` never closes one |
+| `MCP_LAN_ADVERTISE` | | `false` | `true` announces the server on the local network over mDNS; see [Network discovery](#network-discovery) |
 
 Missing or malformed values are reported at startup with every offending
 variable named at once.
@@ -224,6 +225,29 @@ Or, after `npm link`, use the `mcp-actual-stdio` binary.
 
 `GET /api/status` is an unauthenticated liveness probe (name, version, and the
 configured Actual server URL) used by the Docker healthcheck.
+
+### Network discovery
+
+The server describes its MCP endpoint so other tools, such as
+[mcp-router](https://github.com/cubicecho/mcp-router), can find it without
+being given the URL:
+
+- `GET /.well-known/ai-catalog.json` is an [AI Catalog](https://github.com/Agent-Card/ai-catalog)
+  listing `/mcp`.
+- `GET /mcp/server-card` describes it ([MCP Server Card](https://modelcontextprotocol.io/seps/2127-mcp-server-cards)):
+  its name, version, URL, and whether a bearer token is required.
+
+These are public, with no token needed. They say an `Authorization` header is
+required when auth is on, but never carry the token, the Actual server URL or
+anything from the budget. Both come from
+[`@cubicecho/mcp-discovery`](https://github.com/cubicecho/mcp-discovery).
+
+**`MCP_LAN_ADVERTISE=true`** (off by default) also announces the server over
+mDNS as an `_mcp._tcp` service named `MCP Actual on <hostname>`, so it can be
+found without knowing its address. Connecting still needs the token. mDNS needs
+multicast, which Docker's default bridge network drops: in a container, use
+`network_mode: host` (commented out in `docker-compose.yml`) for the
+announcement to reach the LAN.
 
 ## Security notes
 

@@ -65,7 +65,7 @@ const conditionSchema = z
     field: z.string().min(1),
     op: z.string().min(1),
     value: z.unknown(),
-    options: z.record(z.unknown()).optional(),
+    options: z.record(z.string(), z.unknown()).optional(),
   })
   .superRefine((condition, ctx) => {
     const ops = CONDITION_OPS[condition.field];
@@ -89,7 +89,7 @@ const actionSchema = z
     field: z.string().optional(),
     op: z.enum(ACTION_OPS),
     value: z.unknown(),
-    options: z.record(z.unknown()).optional(),
+    options: z.record(z.string(), z.unknown()).optional(),
   })
   .superRefine((action, ctx) => {
     if (action.op !== 'set') {

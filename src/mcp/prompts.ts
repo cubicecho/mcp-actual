@@ -1,5 +1,7 @@
-import type { ZodRawShape } from 'zod';
 import { z } from 'zod';
+
+/** A prompt's arguments: every one an optional string, so a bare `prompts/get` always renders. */
+export type PromptArgsShape = Record<string, z.ZodOptional<z.ZodString>>;
 
 /** Context a prompt renders against — chiefly whether the write tools exist in this server. */
 export interface PromptContext {
@@ -13,7 +15,7 @@ export interface PromptContext {
  * conventions (ids not names, integer cents, sync first) an agent would
  * otherwise have to rediscover.
  */
-export interface PromptDefinition<Args extends ZodRawShape = ZodRawShape> {
+export interface PromptDefinition<Args extends PromptArgsShape = PromptArgsShape> {
   name: string;
   title: string;
   description: string;
@@ -21,7 +23,7 @@ export interface PromptDefinition<Args extends ZodRawShape = ZodRawShape> {
   build: (args: Record<string, string | undefined>, context: PromptContext) => string;
 }
 
-function definePrompt<Args extends ZodRawShape>(definition: PromptDefinition<Args>): PromptDefinition<Args> {
+function definePrompt<Args extends PromptArgsShape>(definition: PromptDefinition<Args>): PromptDefinition<Args> {
   return definition;
 }
 
@@ -291,5 +293,5 @@ const exploreBudget = definePrompt({
  * actually exist.
  */
 export function allPrompts(): PromptDefinition[] {
-  return [exploreBudget, categorizeTransactions, cleanupPayees, backfillRule] as PromptDefinition[];
+  return [exploreBudget, categorizeTransactions, cleanupPayees, backfillRule];
 }

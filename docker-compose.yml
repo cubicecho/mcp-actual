@@ -5,6 +5,10 @@ services:
     ports:
       # host:container — change the left side only.
       - '3000:3000'
+    # To advertise on the LAN over mDNS (MCP_LAN_ADVERTISE), multicast has to
+    # reach the host's network, which the default bridge network drops.
+    # Replace `ports` with:
+    # network_mode: host
     volumes:
       # Cached copy of the downloaded budget — keeps restarts fast.
       # Contains a plaintext SQLite copy of your finances; treat it as sensitive.
@@ -36,6 +40,8 @@ services:
       # Defaults to true: agents may modify the budget. Set false for a
       # read-only server (write tools are then not advertised at all).
       ACTUAL_ENABLE_WRITES: ${ACTUAL_ENABLE_WRITES:-}
+      # `true` announces the server on the LAN over mDNS (needs network_mode: host).
+      MCP_LAN_ADVERTISE: ${MCP_LAN_ADVERTISE:-}
       # Matches the /data volume above; change both together or not at all.
       DATA_DIR: /data
     restart: unless-stopped
