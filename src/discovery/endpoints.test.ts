@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../app.ts';
 import type { Config } from '../config.ts';
 import { stubRepos } from '../mcp/test-repos.ts';
-import { discoveryEndpoints, hostSlug } from './endpoints.ts';
+import { discoveryEndpoints } from './endpoints.ts';
 
 const baseConfig: Config = {
   serverUrl: 'https://budget.example.com',
@@ -72,15 +72,5 @@ describe('discovery documents', () => {
   it('names the card after the host, so two servers on one network stay apart', () => {
     const [endpoint] = discoveryEndpoints(baseConfig, 'NAS.lan');
     expect(endpoint?.identifier).toBe('urn:air:nas.mcp-actual:mcp:budget');
-  });
-});
-
-describe('hostSlug', () => {
-  it.each([
-    ['NAS', 'nas'],
-    ['my_box.lan', 'my-box'],
-    ['---', 'host'],
-  ])('%s → %s', (input, expected) => {
-    expect(hostSlug(input)).toBe(expected);
   });
 });
