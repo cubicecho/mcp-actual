@@ -29,6 +29,7 @@ RUN npm prune --omit=dev
 # No compiler needed: node_modules (including the built better-sqlite3 binding)
 # comes from the builder, which shares this base image and architecture.
 FROM node:26-slim
+LABEL org.opencontainers.image.source=https://github.com/cubicecho/mcp-actual
 
 WORKDIR /app
 
